@@ -15,8 +15,9 @@ Digital trust platform for informal transport: **Next.js** frontend, **FastAPI**
 | **Frontend ↔ API** | `NEXT_PUBLIC_API_URL` drives fetch + eSignet link. OAuth returns to the SPA with **`#access_token=…`**; `OauthFragmentHandler` stores the token and **`/auth/me`** loads the session. |
 | **Inji Certify** | **Issuance service + routes exist**; HTTP payload paths are **placeholders** until aligned with your Inji deployment. Disabled by default (`INJI_CERTIFY_ENABLE=false`). |
 | **Database** | **No Alembic** — `create_all` on startup. Adding columns (e.g. `operators.role`) may require a fresh SQLite file or manual `ALTER` on existing DBs. |
+| **Ops health** | Basic health probe at **`GET /health`**; request logging middleware logs method, path, status, and duration. |
 
-**More detail:** [STATUS.md](./STATUS.md) (which pages call which APIs), [PROGRESS.md](./PROGRESS.md) (prototype vs full product / judge-facing summary).
+**More detail:** [STATUS.md](./STATUS.md) (which pages call which APIs), [PROGRESS.md](./PROGRESS.md) (prototype vs full product / judge-facing summary), [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) (review feedback triage, architecture notes, deployment/testing/ops guidance).
 
 ---
 
@@ -43,6 +44,7 @@ saferide/
 ├── .env / .env.example     # Frontend env (GEMINI, NEXT_PUBLIC_API_URL, …)
 ├── STATUS.md               # UI routes vs backend wiring
 ├── PROGRESS.md             # Maturity vs product submission
+├── TECHNICAL_NOTES.md      # Reviewer feedback triage + technical guidance
 └── README.md               # This file
 ```
 
@@ -85,6 +87,10 @@ Use a **consistent host** for the API in the browser (e.g. always `127.0.0.1` or
 ---
 
 ## Backend API (high level)
+
+### Health & ops
+
+- **`GET /health`** — Basic liveness/readiness probe for the API and database.
 
 ### Auth & session
 

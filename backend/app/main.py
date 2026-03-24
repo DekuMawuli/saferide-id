@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.bindings import router as bindings_router
 from app.api.credentials import router as credentials_router
+from app.api.health import router as health_router
 from app.api.operators import router as operators_router
 from app.api.public_flows import router as public_flows_router
 from app.api.public_trust import router as public_trust_router
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestLoggingMiddleware)
+    app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(public_trust_router)
     app.include_router(public_flows_router)

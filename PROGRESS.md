@@ -2,7 +2,7 @@
 
 This document describes **what the repository actually delivers today** relative to the full SafeRide product vision (trusted operator enrollment, vehicle binding, passenger verification, multi-channel access, consent, governance, and emergency flows).
 
-For **route-by-route API wiring**, see [`STATUS.md`](./STATUS.md). For **how to run the stack**, see [`README.md`](./README.md).
+For **route-by-route API wiring**, see [`STATUS.md`](./STATUS.md). For **how to run the stack**, see [`README.md`](./README.md). For **review feedback triage and technical guidance**, see [`TECHNICAL_NOTES.md`](./TECHNICAL_NOTES.md).
 
 ---
 
