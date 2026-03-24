@@ -1,0 +1,8 @@
+{
+  "name": "SafeRide",
+  "description": "Digital ID-backed trust platform for informal transport. Verify drivers and vehicles before boarding.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
