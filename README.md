@@ -988,55 +988,6 @@ Override: `make backend BACKEND_HOST=0.0.0.0 BACKEND_PORT=9000`
 
 ---
 
-## Roadmap & TODO backlog
-
-### Priority 1 — Golden path (demo-ready)
-
-- [x] eSignet OIDC login (Authorization Code + PKCE + `private_key_jwt` + JWKS verification)
-- [x] Driver onboarding (eSignet → upsert operator → officer approval → short code)
-- [x] Vehicle binding (registry + operator ↔ vehicle bindings; QR on driver profile)
-- [x] Public trust verification (`GET /public/trust/{code}` with 3-tier disclosure)
-- [x] Consent unlock (passenger requests → driver approves → disclosure token → extended tier)
-- [x] Panic share (unauthenticated emergency share → simulated SMS → admin incidents)
-- [x] USSD simulator (full menu: verify / panic / consent, wired to live backend)
-- [x] QR badge (encodes `/verify/result/{short_code}`; shown on driver profile)
-- [x] Inji Certify stack running (certify:8090, certify-nginx:8091, mimoto:8099, inji-web:3004)
-- [x] SafeRide Postgres data provider (certify-saferide.properties queries operators table)
-- [x] SafeRide issuer in mimoto-issuers-config.json (client_id, endpoints, credential_issuer_host)
-- [x] Enable Inji Certify issuance (`INJI_CERTIFY_ENABLE=true`; SafeRide backend aligned to the Certify issuance endpoint + credential type)
-- [ ] Ride/trip log (`ride_events` table; write record on consent approval)
-- [ ] Driver consent notification (real-time badge count in sidebar)
-
-### Priority 2 — Inji Wallet + Verify
-
-- [x] Inji Wallet delivery (driver profile renders backend-generated claim QR / deep link after VC issuance)
-- [ ] Inji Verify on passenger side (replace trust-band DB lookup with cryptographic VC proof)
-- [ ] Offline QR flow (driver shows Wallet VC QR; passenger scans with Inji Verify; no network needed)
-
-### Priority 3 — Governance & operations
-
-- [x] Officer/admin dashboards (operator lists, detail, bind/unbind; RoleGate on layouts)
-- [x] Corporate body scoping (officers see only their body's operators; system_admin sees all)
-- [ ] Role elevation UI (secure admin page to assign officer/admin without DB access)
-- [ ] Incident action wiring ("Mark Under Review", "Suspend", "Add Note" — currently UI stubs)
-- [ ] SACCO / authority workflow
-
-### Priority 4 — Channels & inclusion
-
-- [x] Short-code lookup (no-auth REST + USSD + web verify page)
-- [ ] Real carrier USSD/SMS (Africa's Talking or equivalent; keep simulator for tests)
-- [ ] NFC tap-to-verify
-- [ ] Offline / low-bandwidth (Wallet-held VC works offline)
-
-### Priority 5 — Engineering hardening
-
-- [ ] Postgres + Alembic migrations (replace SQLite `create_all`)
-- [ ] Persistent audit table (dedicated `audit_log` vs synthesising from SMS/operator rows)
-- [ ] HTTPS + cookie hardening + secrets management (before production)
-- [ ] Inji Certify credential schema (SafeRide-specific VC context; publish DID document publicly)
-
----
-
 ## Optional: Gemini / Google GenAI
 
 Set `GEMINI_API_KEY` in the root `.env` to enable AI-assisted features. Separate from eSignet/Inji.
