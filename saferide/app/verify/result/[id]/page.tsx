@@ -1,8 +1,8 @@
 'use client';
 
-import { use, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { Navbar } from '@/components/shared/navbar';
 import { Footer } from '@/components/shared/footer';
 import { Button } from '@/components/ui/button';
@@ -39,9 +39,9 @@ import {
 import type { VcProofSummary } from '@/lib/api/public-trust';
 import type { TrustPublicResponse } from '@/lib/api/types';
 
-export default function VerificationResultPage({ params }: { params: Promise<{ id: string }> }) {
-  const resolvedParams = use(params);
-  const code = resolvedParams.id;
+export default function VerificationResultPage() {
+  const params = useParams<{ id: string }>();
+  const code = typeof params?.id === 'string' ? params.id : '';
   const searchParams = useSearchParams();
   const initialDisclosureToken = searchParams.get('disclosure_token')?.trim() || null;
   const [loading, setLoading] = useState(() => isApiConfigured());
@@ -61,7 +61,7 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
   // Reload trust data when code, tier, or disclosure token changes
   useEffect(() => {
     let cancelled = false;
-    if (!isApiConfigured()) return;
+    if (!isApiConfigured() || !code) return;
     const tier = disclosureToken ? 'extended' : viewTier === 'minimal' ? 'minimal' : 'standard';
     fetchTrustByCode(code, { tier, disclosureToken: disclosureToken ?? undefined })
       .then((row) => {
@@ -84,7 +84,7 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
 
   // Fetch VC proof once per code
   useEffect(() => {
-    if (!isApiConfigured()) return;
+    if (!isApiConfigured() || !code) return;
     fetchVcProof(code).then(setVcProof).catch(() => setVcProof(null));
   }, [code]);
 

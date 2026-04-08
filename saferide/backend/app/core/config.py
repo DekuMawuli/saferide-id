@@ -148,6 +148,10 @@ class Settings(BaseSettings):
         default=None,
         description="PEM path for eSignet signing key used to verify userinfo JWTs when applicable",
     )
+    mock_identity_database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5455/mosip_mockidentitysystem",
+        description="Optional direct Postgres URL for the local mock-identity registry used to recover missing individual_id values",
+    )
 
     # --- Inji Certify (VC issuance) ---
     inji_certify_enable: bool = Field(

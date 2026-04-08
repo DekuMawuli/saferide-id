@@ -60,6 +60,7 @@ from app.services.credential_service import (
     can_issue_operator_credential,
     issue_operator_credential_detached,
 )
+from app.services.mock_identity_service import hydrate_operator_from_mock_identity
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +465,12 @@ async def esignet_callback(
     session.add(operator)
     session.commit()
     session.refresh(operator)
+
+    # Local-dev fallback: some eSignet userinfo payloads omit individual_id even
+    # though the identity exists in mock-identity-system. Hydrate it by phone so
+    # the operator can receive an Inji credential during the same flow.
+    if not (operator.individual_id or "").strip():
+        hydrate_operator_from_mock_identity(session, settings, operator)
 
     esignet_debug_store.set(
         operator.id,

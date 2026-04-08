@@ -400,6 +400,26 @@ class ESignetService:
 
     def normalize_claims(self, claims: dict[str, Any]) -> dict[str, Any]:
         """Map OIDC-style claims into SafeRide operator fields."""
+        def _pick_text(value: Any) -> str | None:
+            if isinstance(value, str):
+                v = value.strip()
+                return v or None
+            if isinstance(value, dict):
+                nested = (
+                    value.get("value")
+                    or value.get("name")
+                    or value.get("text")
+                    or value.get("number")
+                    or value.get("id")
+                )
+                return _pick_text(nested)
+            if isinstance(value, list):
+                for item in value:
+                    out = _pick_text(item)
+                    if out:
+                        return out
+            return None
+
         def _pick_phone(value: Any) -> str | None:
             if isinstance(value, str):
                 v = value.strip()
@@ -448,6 +468,26 @@ class ESignetService:
                             return p
             return None
 
+        def _extract_individual_id(payload: dict[str, Any]) -> str | None:
+            for key in ("individual_id", "individualId", "uin", "UIN", "vid", "VID"):
+                value = _pick_text(payload.get(key))
+                if value:
+                    return value
+            nested_candidates = [
+                payload.get("verified_claims"),
+                payload.get("claims"),
+                payload.get("identity"),
+                payload.get("credentialSubject"),
+                payload.get("vc"),
+            ]
+            for node in nested_candidates:
+                if isinstance(node, dict):
+                    for key in ("individual_id", "individualId", "uin", "UIN", "vid", "VID"):
+                        value = _pick_text(node.get(key))
+                        if value:
+                            return value
+            return None
+
         sub = claims.get("sub")
         if not sub:
             raise ValueError("eSignet userinfo is missing required `sub` claim")
@@ -475,7 +515,7 @@ class ESignetService:
             "email": claims.get("email"),
             "phone": phone,
             "photo_ref": claims.get("picture"),
-            "individual_id": claims.get("individual_id"),
+            "individual_id": _extract_individual_id(claims),
             "gender": claims.get("gender"),
             "birthdate": claims.get("birthdate"),
             "registration_type": claims.get("registration_type"),

@@ -17,6 +17,7 @@ from app.db.models.vehicle import Vehicle
 from app.db.session import get_engine
 from app.services.esignet_service import ESignetService, VCI_SCOPE
 from app.services.inji_certify_service import InjiCertifyConfigError, InjiCertifyService
+from app.services.mock_identity_service import hydrate_operator_from_mock_identity
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,10 @@ async def issue_operator_credential(
             operator.esignet_verified_at is not None,
         )
         raise CredentialIssuanceError(reason, status_code=409)
+
+    if not (operator.individual_id or "").strip():
+        hydrate_operator_from_mock_identity(session, settings, operator)
+        operator = session.get(Operator, operator_id) or operator
 
     if not (operator.individual_id or "").strip():
         raise CredentialIssuanceError(

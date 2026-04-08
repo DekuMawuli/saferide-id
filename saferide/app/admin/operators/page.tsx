@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import Script from 'next/script';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -261,6 +262,10 @@ export default function AdminOperatorsPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
+      <Script
+        src="http://localhost:3000/plugins/sign-in-button-plugin.js"
+        strategy="afterInteractive"
+      />
       <main className="container mx-auto flex-1 px-4 py-8 md:py-12">
         <div className="mb-6">
           <Link
