@@ -8,6 +8,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class CredentialClaimLinks(BaseModel):
+    """Wallet handoff data derived from SafeRide + Inji runtime config."""
+
+    credential_configuration_id: str
+    credential_issuer: str
+    issuer_metadata_url: str
+    wallet_deep_link: str
+    inji_web_url: str | None = None
+
+
 class CredentialRead(BaseModel):
     """Stored credential row exposed by the API."""
 
@@ -24,6 +34,7 @@ class CredentialRead(BaseModel):
     issued_at: datetime | None = None
     expires_at: datetime | None = None
     raw_reference: str | None = None
+    claim_links: CredentialClaimLinks | None = None
     created_at: datetime
     updated_at: datetime
 

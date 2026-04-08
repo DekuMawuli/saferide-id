@@ -14,13 +14,14 @@ from app.core.config import Settings, get_settings
 from app.db.models.credential import Credential
 from app.db.models.operator import Operator
 from app.db.session import get_session
-from app.schemas.credential import CredentialIssueResponse, CredentialRead
+from app.schemas.credential import CredentialClaimLinks, CredentialIssueResponse, CredentialRead
 from app.services.credential_service import (
     CredentialIssuanceError,
     get_credential,
     issue_operator_credential,
     issue_vehicle_binding_credential,
 )
+from app.services.inji_certify_service import InjiCertifyConfigError, InjiCertifyService
 from sqlmodel import select
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,29 @@ router = APIRouter(prefix="/credentials", tags=["credentials"])
 
 def get_settings_dep() -> Settings:
     return get_settings()
+
+
+def _build_claim_links(row: Credential, settings: Settings) -> CredentialClaimLinks | None:
+    config_id = (row.template_name or "").strip()
+    if not config_id:
+        return None
+    try:
+        inji = InjiCertifyService(settings)
+        return CredentialClaimLinks(
+            credential_configuration_id=config_id,
+            credential_issuer=inji.build_authorization_code_offer(config_id)["credential_issuer"],
+            issuer_metadata_url=inji.build_metadata_url(),
+            wallet_deep_link=inji.build_wallet_deep_link(config_id),
+            inji_web_url=settings.inji_web_base_url.strip() or None,
+        )
+    except InjiCertifyConfigError:
+        return None
+
+
+def _to_credential_read(row: Credential, settings: Settings) -> CredentialRead:
+    payload = CredentialRead.model_validate(row).model_dump()
+    payload["claim_links"] = _build_claim_links(row, settings)
+    return CredentialRead(**payload)
 
 
 @router.post(
@@ -50,7 +74,7 @@ async def issue_operator_vc(
     except CredentialIssuanceError as exc:
         raise HTTPException(exc.status_code, detail=exc.message) from exc
     return CredentialIssueResponse(
-        credential=CredentialRead.model_validate(row),
+        credential=_to_credential_read(row, settings),
     )
 
 
@@ -79,7 +103,7 @@ async def issue_vehicle_binding_vc(
     except CredentialIssuanceError as exc:
         raise HTTPException(exc.status_code, detail=exc.message) from exc
     return CredentialIssueResponse(
-        credential=CredentialRead.model_validate(row),
+        credential=_to_credential_read(row, settings),
     )
 
 
@@ -87,6 +111,7 @@ async def issue_vehicle_binding_vc(
 def list_my_credentials(
     actor: Annotated[Operator, Depends(get_current_operator)],
     session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> list[CredentialRead]:
     """Return all credentials issued to the currently authenticated operator."""
     stmt = (
@@ -95,7 +120,7 @@ def list_my_credentials(
         .order_by(Credential.created_at.desc())
     )
     rows = list(session.exec(stmt).all())
-    return [CredentialRead.model_validate(r) for r in rows]
+    return [_to_credential_read(r, settings) for r in rows]
 
 
 @router.get("/{credential_id}", response_model=CredentialRead)
@@ -103,10 +128,11 @@ def read_credential(
     credential_id: UUID,
     _actor: Annotated[Operator, Depends(require_governance_read_operator)],
     session: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> CredentialRead:
     """Fetch a persisted credential record by id."""
     row = get_credential(session, credential_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found")
     logger.debug("credentials.get credential_id=%s", credential_id)
-    return CredentialRead.model_validate(row)
+    return _to_credential_read(row, settings)

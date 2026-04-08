@@ -202,7 +202,9 @@ The `saferide` profile (highest priority — loaded last) overrides the data pro
 - Switches data provider from CSV to **PostgreSQL**: `mosip.certify.integration.data-provider-plugin=PostgresDataProviderPlugin`
 - Connects to the SafeRide backend's database: `jdbc:postgresql://docker-compose-injistack-database-1:5432/saferide`
   - **Important:** Uses the full Docker container name (`docker-compose-injistack-database-1`) rather than just `database` to avoid hostname collision with eSignet's own `database` service on the shared `mosip_network`.
-- Maps the `saferide_driver_vc_ldp` credential scope to a SQL query that JOINs `operators`, `operator_vehicle_bindings`, and `vehicles` tables. The `individual_id` from the proof JWT sub claim is used as the lookup key.
+- Maps the `saferide_driver_vc_ldp` credential scope to a SQL query that JOINs `operators`, `operator_vehicle_bindings`, and `vehicles` tables.
+  - The lookup accepts either the hashed eSignet subject or the plain `individual_id`, so the canonical SafeRide operator row can still be resolved after eSignet login.
+  - SQL aliases are preserved as camelCase (`fullName`, `vehiclePlate`, `operatorCode`, etc.) because the `SafeRideDriverCredential` template expects those exact placeholder names.
 
 **`certify-default.properties` — key settings:**
 - DB hostname hardcoded to `docker-compose-injistack-database-1` (same container-name reason as above).
@@ -264,6 +266,29 @@ curl http://localhost:8090/v1/certify/actuator/health
 curl http://localhost:8091/.well-known/openid-credential-issuer
 curl http://localhost:8099/v1/mimoto/actuator/health
 ```
+
+#### Loading the SafeRide credential configuration
+
+After the Inji stack is healthy, upsert the working SafeRide credential config from the repository payload:
+
+```bash
+cd /home/kofivi/SAFERIDE/saferide/backend
+uv run python scripts/setup_inji_config.py
+```
+
+This loads the verified local configuration for:
+- `credentialConfigKeyId=SafeRideDriverCredential`
+- credential scope `saferide_driver_vc_ldp`
+- the SafeRide VC template from `inji/docs/postman-collections/saferide-credential-configuration.payload.json`
+
+Verify it is live:
+
+```bash
+curl http://localhost:8091/.well-known/openid-credential-issuer
+```
+
+Look for:
+- `credential_configurations_supported.SafeRideDriverCredential.scope = saferide_driver_vc_ldp`
 
 #### Stopping / cleaning the Inji stack
 
@@ -346,13 +371,17 @@ DATABASE_URL=sqlite:///./saferide.db   # or postgresql+psycopg://...
 
 # eSignet OIDC
 ESIGNET_CLIENT_ID=saferide-client
+ESIGNET_BASE_URL=http://localhost:8088
 ESIGNET_ISSUER=http://localhost:8088
 ESIGNET_AUTHORIZATION_ENDPOINT=http://localhost:8088/authorize
 ESIGNET_TOKEN_ENDPOINT=http://localhost:8088/v1/esignet/oauth/v2/token
 ESIGNET_USERINFO_ENDPOINT=http://localhost:8088/v1/esignet/oidc/userinfo
 ESIGNET_JWKS_URI=http://localhost:8088/.well-known/jwks.json
 ESIGNET_REDIRECT_URI=http://127.0.0.1:8000/auth/esignet/callback
+ESIGNET_SCOPES=openid profile email phone
 ESIGNET_PRIVATE_KEY_PATH=./keys/esignet_private.pem
+ESIGNET_VCI_OTP=111111
+ESIGNET_VCI_OTP_CHANNELS=email,phone
 
 # Frontend URL (where to redirect after login)
 FRONTEND_APP_URL=http://localhost:3000
@@ -369,8 +398,48 @@ ADMIN_BOOTSTRAP_SECRET=change-this-for-dev
 ```env
 INJI_CERTIFY_ENABLE=false          # set true to enable VC issuance
 INJI_CERTIFY_BASE_URL=http://127.0.0.1:8090
+INJI_CERTIFY_IDENTIFIER=http://certify-nginx:80
 INJI_CERTIFY_ISSUER_ID=SafeRide
+INJI_CERTIFY_OPERATOR_CREDENTIAL_TEMPLATE=SafeRideDriverCredential
+INJI_CERTIFY_OPERATOR_ISSUE_PATH=/v1/certify/issuance/credential
+INJI_CERTIFY_CREDENTIAL_ISSUER_PATH=/v1/certify
+INJI_WEB_BASE_URL=http://localhost:3004
 ```
+
+**Important scope split:**
+
+- `ESIGNET_SCOPES` is for normal SafeRide login and should remain:
+  - `openid profile email phone`
+- Certify issuance uses a separate credential scope:
+  - `saferide_driver_vc_ldp`
+- SafeRide mints a dedicated credential-scoped token during issuance; do not replace `ESIGNET_SCOPES` with the Certify scope in backend env.
+
+**Verified local integration checklist:**
+
+For the working local stack verified in this repo:
+
+```env
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5433/saferide
+ESIGNET_CLIENT_ID=saferide-client
+ESIGNET_PRIVATE_KEY_PATH=./keys/esignet_private.pem
+ESIGNET_SCOPES=openid profile email phone
+ESIGNET_VCI_OTP=111111
+ESIGNET_VCI_OTP_CHANNELS=email,phone
+INJI_CERTIFY_ENABLE=true
+INJI_CERTIFY_BASE_URL=http://127.0.0.1:8090
+INJI_CERTIFY_IDENTIFIER=http://certify-nginx:80
+INJI_CERTIFY_OPERATOR_CREDENTIAL_TEMPLATE=SafeRideDriverCredential
+INJI_CERTIFY_OPERATOR_ISSUE_PATH=/v1/certify/issuance/credential
+INJI_CERTIFY_CREDENTIAL_ISSUER_PATH=/v1/certify
+INJI_WEB_BASE_URL=http://localhost:3004
+```
+
+Then:
+1. Start eSignet
+2. Register `saferide-client`
+3. Start Inji Certify
+4. Run `uv run python scripts/setup_inji_config.py`
+5. Start SafeRide backend/frontend
 
 **Full reference — all backend settings:**
 
@@ -395,11 +464,19 @@ INJI_CERTIFY_ISSUER_ID=SafeRide
 | `ESIGNET_CLIENT_ID` | — | **Required:** the registered client id |
 | `ESIGNET_REDIRECT_URI` | `…/auth/esignet/callback` | Must match eSignet registration |
 | `ESIGNET_SCOPES` | `openid profile email phone` | Requested OIDC scopes |
+| `ESIGNET_VCI_OTP` | `111111` | OTP used for the local browserless credential-token flow |
+| `ESIGNET_VCI_OTP_CHANNELS` | `email,phone` | OTP channels requested for the local VCI flow |
 | `ESIGNET_PRIVATE_KEY_PATH` | — | **Required:** RSA PEM path |
 | `ESIGNET_PRIVATE_KEY_KID` | — | Optional JOSE `kid` header |
 | `ESIGNET_CLIENT_ASSERTION_ALG` | `RS256` | `private_key_jwt` signing alg |
 | `INJI_CERTIFY_ENABLE` | `false` | Toggle VC issuance endpoints |
 | `INJI_CERTIFY_BASE_URL` | `http://127.0.0.1:8090` | Certify service URL |
+| `INJI_CERTIFY_IDENTIFIER` | `http://certify-nginx:80` | Proof JWT audience / credential issuer identifier expected by Certify |
+| `INJI_CERTIFY_ISSUER_ID` | — | Issuer label stored with SafeRide credential records |
+| `INJI_CERTIFY_OPERATOR_CREDENTIAL_TEMPLATE` | `SafeRideDriverCredential` | Certify config id for driver VC issuance |
+| `INJI_CERTIFY_OPERATOR_ISSUE_PATH` | `/v1/certify/issuance/credential` | Relative issue path under `INJI_CERTIFY_BASE_URL` |
+| `INJI_CERTIFY_CREDENTIAL_ISSUER_PATH` | `/v1/certify` | Relative OpenID4VCI credential issuer path |
+| `INJI_WEB_BASE_URL` | `http://localhost:3004` | Local Inji Web wallet UI |
 | `CONSENT_REQUEST_TTL_MINUTES` | 15 | Consent request expiry |
 | `DISCLOSURE_TOKEN_TTL_MINUTES` | 60 | Extended-tier token TTL |
 | `SIM_EMERGENCY_SMS_RECIPIENTS` | — | Comma MSISDNs for panic SMS sim |
@@ -417,7 +494,6 @@ cp .env.example .env.local
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8000     # FastAPI backend
 APP_URL=http://localhost:3000                   # Next.js public URL
 NEXT_PUBLIC_APP_URL=http://localhost:3000       # Used in QR codes / badges
-NEXT_PUBLIC_CERTIFY_BASE_URL=http://127.0.0.1:8090  # Inji Certify (for VC offer links)
 GEMINI_API_KEY=                                 # Optional — only if using AI features
 DISABLE_HMR=false                               # Set true when an external agent edits files
 ```
@@ -570,6 +646,7 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5433/saferide
 - `POST /auth/rider/login` — Rider daily login (phone + password; eSignet remains for onboarding).
 - `POST /auth/admin/users` — Create staff users (system_admin only; roles: `monitor|support|officer|driver|admin|system_admin`).
 - `POST /operators/enroll` — Officer enrolls a transport-side identity (`driver` or `passenger`).
+- `POST /operators/onboarding/esignet/start` — Start officer-led eSignet onboarding for a new driver under the officer's corporate body.
 - `POST /operators/{id}/onboarding/esignet/start` — Start passenger eSignet verification.
 
 ### Operators, fleet, public verify
@@ -599,7 +676,7 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5433/saferide
 
 Requires `INJI_CERTIFY_ENABLE=true`:
 
-- `POST /credentials/issue/operator/{id}` — Issue operator VC (officer/admin; operator must be APPROVED/ACTIVE and eSignet-verified).
+- `POST /credentials/issue/operator/{id}` — Issue operator VC (officer/admin; operator must be APPROVED/ACTIVE, eSignet-verified, and have `individual_id` on the canonical SafeRide operator row).
 - `POST /credentials/issue/vehicle/{operator_id}/{vehicle_id}` — Issue vehicle-binding VC.
 - `GET /credentials/{id}` — Retrieve issued credential record.
 
@@ -691,30 +768,43 @@ In-memory `OauthStateStore` (10 min TTL, HMAC-signed). Redis-swappable for multi
 
 ### SafeRide credential scope: `saferide_driver_vc_ldp`
 
+SafeRide intentionally uses two different scope layers:
+
+- Login/OIDC scope:
+  - `openid profile email phone`
+- Credential/VCI scope:
+  - `saferide_driver_vc_ldp`
+
+The backend keeps these separate. Normal login uses `ESIGNET_SCOPES`, while VC issuance mints a second credential-scoped token plus `c_nonce` specifically for Certify.
+
 The Certify Postgres plugin executes this query when a driver requests their VC:
 
 ```sql
 SELECT
-  o.individual_id   AS id,
-  o.full_name       AS fullName,
-  o.phone           AS mobileNumber,
-  o.birthdate       AS dateOfBirth,
-  o.gender          AS gender,
-  o.status          AS operatorStatus,
-  o.verify_short_code AS operatorCode,
-  v.external_ref    AS vehiclePlate,
-  v.make_model      AS vehicleMakeModel,
-  v.vehicle_type    AS vehicleType,
-  v.color           AS vehicleColor
-FROM operators o
-LEFT JOIN operator_vehicle_bindings b ON b.operator_id = o.id AND b.is_active = true
-LEFT JOIN vehicles v ON v.id = b.vehicle_id
-WHERE o.individual_id = :id
+  o.individual_id     AS "id",
+  o.full_name         AS "fullName",
+  o.phone             AS "mobileNumber",
+  o.birthdate         AS "dateOfBirth",
+  o.gender            AS "gender",
+  o.status            AS "operatorStatus",
+  o.verify_short_code AS "operatorCode",
+  v.external_ref      AS "vehiclePlate",
+  v.make_model        AS "vehicleMakeModel",
+  v.vehicle_type      AS "vehicleType",
+  v.color             AS "vehicleColor"
+FROM public.operators o
+LEFT JOIN public.operator_vehicle_bindings b ON b.operator_id = o.id AND b.is_active = true
+LEFT JOIN public.vehicles v ON v.id = b.vehicle_id
+WHERE (o.external_subject_id = :id OR o.individual_id = :id)
   AND o.status IN ('APPROVED', 'ACTIVE')
 LIMIT 1
 ```
 
-The `individual_id` is the `sub` claim from the eSignet ID token stored during onboarding.
+Certify validates the credential-scoped access token, then uses its subject to resolve the SafeRide operator row. In practice this means:
+
+- after eSignet login, the subject may be a hashed external subject id
+- SafeRide must reconcile that identity onto the canonical operator row
+- Certify then resolves the same canonical row, including vehicle binding and `individual_id`
 
 ### Issuer DID
 
@@ -726,7 +816,12 @@ The `individual_id` is the `sub` claim from the eSignet ID token stored during o
 # backend/.env
 INJI_CERTIFY_ENABLE=true
 INJI_CERTIFY_BASE_URL=http://127.0.0.1:8090
+INJI_CERTIFY_IDENTIFIER=http://certify-nginx:80
 INJI_CERTIFY_ISSUER_ID=SafeRide
+INJI_CERTIFY_OPERATOR_CREDENTIAL_TEMPLATE=SafeRideDriverCredential
+INJI_CERTIFY_OPERATOR_ISSUE_PATH=/v1/certify/issuance/credential
+INJI_CERTIFY_CREDENTIAL_ISSUER_PATH=/v1/certify
+INJI_WEB_BASE_URL=http://localhost:3004
 ```
 
 ---
@@ -884,9 +979,9 @@ Override: `make backend BACKEND_HOST=0.0.0.0 BACKEND_PORT=9000`
 | Component | Role in SafeRide | Status |
 |-----------|-----------------|--------|
 | **eSignet** | Driver identity verification at onboarding — issues `esignet_verified_at` | Working |
-| **Inji Certify** | Issues W3C VC for driver badge (Postgres plugin wired to SafeRide DB) | Running — enable with `INJI_CERTIFY_ENABLE=true` |
+| **Inji Certify** | Issues W3C VC for driver badge (Postgres plugin wired to SafeRide DB) | Running — SafeRide backend aligned to `SafeRideDriverCredential` |
 | **Inji Web** | Web UI for credential download (SafeRide issuer configured in mimoto-issuers-config.json) | Running on :3004 |
-| **Inji Wallet** | Driver holds VC on device, presents QR for offline verification | Next step — deep link after issuance |
+| **Inji Wallet** | Driver holds VC on device, presents QR for offline verification | Driver profile now exposes wallet claim QR / deep link |
 | **Inji Verify** | Passenger scans driver Wallet QR — cryptographic VC verification | Next step — replace trust-band lookup |
 
 ---
@@ -906,13 +1001,13 @@ Override: `make backend BACKEND_HOST=0.0.0.0 BACKEND_PORT=9000`
 - [x] Inji Certify stack running (certify:8090, certify-nginx:8091, mimoto:8099, inji-web:3004)
 - [x] SafeRide Postgres data provider (certify-saferide.properties queries operators table)
 - [x] SafeRide issuer in mimoto-issuers-config.json (client_id, endpoints, credential_issuer_host)
-- [ ] Enable Inji Certify issuance (`INJI_CERTIFY_ENABLE=true`; align credential subject with deployment)
+- [x] Enable Inji Certify issuance (`INJI_CERTIFY_ENABLE=true`; SafeRide backend aligned to the Certify issuance endpoint + credential type)
 - [ ] Ride/trip log (`ride_events` table; write record on consent approval)
 - [ ] Driver consent notification (real-time badge count in sidebar)
 
 ### Priority 2 — Inji Wallet + Verify
 
-- [ ] Inji Wallet delivery (deep link / QR after VC issuance so driver can claim into Inji Wallet)
+- [x] Inji Wallet delivery (driver profile renders backend-generated claim QR / deep link after VC issuance)
 - [ ] Inji Verify on passenger side (replace trust-band DB lookup with cryptographic VC proof)
 - [ ] Offline QR flow (driver shows Wallet VC QR; passenger scans with Inji Verify; no network needed)
 

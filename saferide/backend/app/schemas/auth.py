@@ -42,11 +42,13 @@ class AuthMeResponse(BaseModel):
 
 class ESignetTokenResponse(BaseModel):
     access_token: str
-    id_token: str
+    id_token: str | None = None
     token_type: str = "Bearer"
     expires_in: int | None = None
     scope: str | None = None
     refresh_token: str | None = None
+    c_nonce: str | None = None
+    c_nonce_expires_in: int | None = None
 
 
 class ESignetUserInfoResponse(BaseModel):

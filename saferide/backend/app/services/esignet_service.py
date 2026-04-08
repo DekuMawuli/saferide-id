@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import secrets
 import time
@@ -20,6 +23,7 @@ from app.services.jwks_service import jwks_service
 logger = logging.getLogger(__name__)
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+VCI_SCOPE = "saferide_driver_vc_ldp"
 
 
 class MissingConfigError(RuntimeError):
@@ -111,6 +115,47 @@ class ESignetService:
             headers=headers,
         )
 
+    @staticmethod
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+    def _build_pkce_verifier_pair(self) -> tuple[str, str]:
+        verifier = secrets.token_urlsafe(64)[:86]
+        challenge = self._b64url(hashlib.sha256(verifier.encode("utf-8")).digest())
+        return verifier, challenge
+
+    def _api_url(self, path: str) -> str:
+        base = self._s.esignet_base_url.rstrip("/")
+        suffix = path if path.startswith("/") else f"/{path}"
+        return f"{base}/v1/esignet{suffix}"
+
+    @staticmethod
+    def _request_wrapper(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "requestTime": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "request": payload,
+        }
+
+    @staticmethod
+    def _oauth_details_hash(oauth_response: dict[str, Any]) -> str:
+        digest = hashlib.sha256(
+            json.dumps(oauth_response, separators=(",", ":")).encode("utf-8")
+        ).digest()
+        return ESignetService._b64url(digest)
+
+    @staticmethod
+    def _extract_response_or_raise(step: str, body: dict[str, Any]) -> dict[str, Any]:
+        errors = body.get("errors") or []
+        if errors:
+            first = errors[0] if isinstance(errors, list) and errors else {}
+            code = first.get("errorCode") or "unknown_error"
+            msg = first.get("errorMessage") or code
+            raise TokenExchangeError(f"{step} failed: {code}: {msg}")
+        response = body.get("response")
+        if not isinstance(response, dict):
+            raise TokenExchangeError(f"{step} returned no response payload")
+        return response
+
     async def exchange_code_for_token(self, *, code: str, code_verifier: str | None = None) -> ESignetTokenResponse:
         """Exchange an authorization code for tokens at the eSignet token endpoint."""
         self._require_oidc_urls()
@@ -143,6 +188,122 @@ class ESignetService:
             return ESignetTokenResponse.model_validate(body)
         except Exception as exc:  # noqa: BLE001
             raise TokenExchangeError(f"Token payload shape invalid: {exc}") from exc
+
+    async def exchange_vci_token(self, *, individual_id: str, scope: str = VCI_SCOPE) -> ESignetTokenResponse:
+        """
+        Complete the local browserless VCI auth-code flow and return a
+        credential-scoped access token plus the `c_nonce` required by Certify.
+        """
+        self._require_oidc_urls()
+        if not individual_id.strip():
+            raise TokenExchangeError("VCI token flow requires a non-empty individual_id")
+
+        code_verifier, code_challenge = self._build_pkce_verifier_pair()
+        acr_values = self._s.esignet_acr_values.strip() or "mosip:idp:acr:generated-code"
+        otp_channels = [
+            item.strip()
+            for item in self._s.esignet_vci_otp_channels.split(",")
+            if item.strip()
+        ] or ["email", "phone"]
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            csrf_resp = await client.get(self._api_url("/csrf/token"))
+            csrf_resp.raise_for_status()
+            csrf_body = csrf_resp.json()
+            csrf_token = str(csrf_body.get("token") or "").strip()
+            if not csrf_token:
+                raise TokenExchangeError("VCI auth flow did not receive a CSRF token")
+
+            oauth_resp = await client.post(
+                self._api_url("/authorization/v2/oauth-details"),
+                headers={"X-XSRF-TOKEN": csrf_token, "Content-Type": "application/json"},
+                json=self._request_wrapper(
+                    {
+                        "clientId": self._s.esignet_client_id,
+                        "scope": scope,
+                        "responseType": "code",
+                        "redirectUri": self._s.esignet_redirect_uri,
+                        "display": "popup",
+                        "prompt": "login",
+                        "acrValues": acr_values,
+                        "nonce": secrets.token_urlsafe(12),
+                        "state": secrets.token_urlsafe(12),
+                        "claimsLocales": "en",
+                        "codeChallenge": code_challenge,
+                        "codeChallengeMethod": "S256",
+                    }
+                ),
+            )
+            oauth_resp.raise_for_status()
+            oauth_body = oauth_resp.json()
+            oauth_details = self._extract_response_or_raise("VCI oauth-details", oauth_body)
+            transaction_id = str(oauth_details.get("transactionId") or "").strip()
+            if not transaction_id:
+                raise TokenExchangeError("VCI oauth-details did not return a transactionId")
+
+            flow_headers = {
+                "X-XSRF-TOKEN": csrf_token,
+                "oauth-details-key": transaction_id,
+                "oauth-details-hash": self._oauth_details_hash(oauth_details),
+                "Content-Type": "application/json",
+            }
+
+            send_otp_resp = await client.post(
+                self._api_url("/authorization/send-otp"),
+                headers=flow_headers,
+                json=self._request_wrapper(
+                    {
+                        "transactionId": transaction_id,
+                        "individualId": individual_id,
+                        "otpChannels": otp_channels,
+                        "captchaToken": "dummy",
+                    }
+                ),
+            )
+            send_otp_resp.raise_for_status()
+            self._extract_response_or_raise("VCI send-otp", send_otp_resp.json())
+
+            authenticate_resp = await client.post(
+                self._api_url("/authorization/v3/authenticate"),
+                headers=flow_headers,
+                json=self._request_wrapper(
+                    {
+                        "transactionId": transaction_id,
+                        "individualId": individual_id,
+                        "challengeList": [
+                            {
+                                "authFactorType": "OTP",
+                                "challenge": self._s.esignet_vci_otp,
+                                "format": "alpha-numeric",
+                            }
+                        ],
+                    }
+                ),
+            )
+            authenticate_resp.raise_for_status()
+            self._extract_response_or_raise("VCI authenticate", authenticate_resp.json())
+
+            auth_code_resp = await client.post(
+                self._api_url("/authorization/auth-code"),
+                headers=flow_headers,
+                json=self._request_wrapper(
+                    {
+                        "transactionId": transaction_id,
+                        "acceptedClaims": [],
+                        "permittedAuthorizeScopes": [],
+                    }
+                ),
+            )
+            auth_code_resp.raise_for_status()
+            auth_code_data = self._extract_response_or_raise("VCI auth-code", auth_code_resp.json())
+            code = str(auth_code_data.get("code") or "").strip()
+            if not code:
+                raise TokenExchangeError("VCI auth-code did not return an authorization code")
+
+        tokens = await self.exchange_code_for_token(code=code, code_verifier=code_verifier)
+        if not tokens.c_nonce:
+            raise TokenExchangeError("VCI token response did not include c_nonce")
+        return tokens
 
     async def fetch_userinfo(self, access_token: str) -> dict | str:
         """Call the OIDC userinfo endpoint with the access token."""

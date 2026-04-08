@@ -41,7 +41,11 @@ from app.schemas.operator import (
 )
 from app.services.esignet_debug_store import esignet_debug_store
 from app.services.esignet_service import ESignetService, MissingConfigError
-from app.services.credential_service import CredentialIssuanceError, can_issue_operator_credential, issue_operator_credential
+from app.services.credential_service import (
+    CredentialIssuanceError,
+    can_issue_operator_credential,
+    issue_operator_credential_detached,
+)
 from app.services.governance_service import GovernanceError, list_operators_with_vehicle_hint, set_operator_trust_status
 from app.services.oauth_state_store import oauth_state_store
 from app.services.pkce_service import build_s256_challenge, generate_code_verifier
@@ -306,7 +310,7 @@ async def patch_operator_status(
             import asyncio
             async def _issue_vc() -> None:
                 try:
-                    await issue_operator_credential(session, op.id, settings)
+                    await issue_operator_credential_detached(op.id, settings)
                     logger.info("operators.patch_status: VC issued operator_id=%s", op.id)
                 except CredentialIssuanceError as exc:
                     logger.warning("operators.patch_status: VC skipped operator_id=%s reason=%s", op.id, exc.message)

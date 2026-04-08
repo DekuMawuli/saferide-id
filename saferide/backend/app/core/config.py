@@ -122,6 +122,14 @@ class Settings(BaseSettings):
         default="",
         description="Optional acr_values parameter for the authorize request",
     )
+    esignet_vci_otp: str = Field(
+        default="111111",
+        description="OTP/code used for the local browserless VCI auth flow",
+    )
+    esignet_vci_otp_channels: str = Field(
+        default="email,phone",
+        description="Comma-separated OTP channels requested for the local VCI auth flow",
+    )
     esignet_private_key_path: Path | None = Field(
         default=None,
         description="PEM path for RSA private key (private_key_jwt client auth at token endpoint)",
@@ -150,6 +158,10 @@ class Settings(BaseSettings):
         default="",
         description="Base URL of Inji Certify issuance API (no trailing slash required)",
     )
+    inji_certify_identifier: str = Field(
+        default="",
+        description="Credential issuer identifier / proof audience expected by Inji Certify",
+    )
     inji_certify_api_key: str = Field(
         default="",
         description="Optional API key / bearer secret for Inji (sent as Bearer if non-empty)",
@@ -165,20 +177,28 @@ class Settings(BaseSettings):
         description="HTTP client timeout (seconds) for Inji calls",
     )
     inji_certify_operator_credential_template: str = Field(
-        default="saferide-operator-v1",
-        description="Template / credential type id for operator credentials",
+        default="SafeRideDriverCredential",
+        description="Credential configuration id / type used for operator credentials",
     )
     inji_certify_vehicle_credential_template: str = Field(
-        default="saferide-vehicle-binding-v1",
-        description="Template / credential type id for operator–vehicle binding credentials",
+        default="SafeRideVehicleBindingCredential",
+        description="Credential configuration id / type used for operator–vehicle binding credentials",
     )
     inji_certify_operator_issue_path: str = Field(
-        default="/v1/credentials/issue/operator",
-        description="Relative path under base URL for operator issuance (TODO: align with deployment)",
+        default="/v1/certify/issuance/credential",
+        description="Relative path under base URL for operator credential issuance",
     )
     inji_certify_vehicle_issue_path: str = Field(
-        default="/v1/credentials/issue/vehicle",
-        description="Relative path under base URL for vehicle-binding issuance (TODO: align with deployment)",
+        default="/v1/certify/issuance/credential",
+        description="Relative path under base URL for vehicle-binding issuance",
+    )
+    inji_certify_credential_issuer_path: str = Field(
+        default="/v1/certify",
+        description="Relative path under base URL for the OpenID4VCI credential issuer identifier",
+    )
+    inji_web_base_url: str = Field(
+        default="http://localhost:3004",
+        description="Base URL of the local Inji Web wallet UI",
     )
 
     # --- Disclosure consent + simulated channels (lab) ---

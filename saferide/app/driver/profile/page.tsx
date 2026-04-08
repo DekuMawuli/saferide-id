@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -11,10 +11,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ShieldCheck, Car, MapPin, Clock, QrCode, AlertTriangle, Settings, LogOut, BadgeCheck, UserCheck } from 'lucide-react';
 import { useOperatorSession } from '@/hooks/use-operator-session';
 import { useDriverData } from '@/hooks/use-driver-data';
-import { isApiConfigured } from '@/lib/api/config';
 import { useDriverConsents } from '@/app/driver/layout';
 import { getPublicAppOrigin } from '@/lib/app-url';
-import { fetchMyCredentials, buildWalletDeepLink } from '@/lib/api/credentials';
+import { fetchMyCredentials } from '@/lib/api/credentials';
 import type { CredentialRecord } from '@/lib/api/credentials';
 
 
@@ -52,19 +51,27 @@ export default function DriverProfilePage() {
   const { consentRequests: consentOpen } = useDriverConsents();
   const [credentials, setCredentials] = useState<CredentialRecord[]>([]);
 
-  const loadCredentials = useCallback(async () => {
-    if (!hasToken || !apiConfigured) { setCredentials([]); return; }
-    try {
-      const rows = await fetchMyCredentials();
-      setCredentials(rows);
-    } catch {
-      setCredentials([]);
-    }
-  }, [hasToken, apiConfigured]);
-
   useEffect(() => {
+    let active = true;
+
+    async function loadCredentials() {
+      if (!hasToken || !apiConfigured) {
+        if (active) setCredentials([]);
+        return;
+      }
+      try {
+        const rows = await fetchMyCredentials();
+        if (active) setCredentials(rows);
+      } catch {
+        if (active) setCredentials([]);
+      }
+    }
+
     void loadCredentials();
-  }, [loadCredentials]);
+    return () => {
+      active = false;
+    };
+  }, [hasToken, apiConfigured]);
 
   const trustEvents = useMemo(
     () => rideEvents.filter((e) => e.event_type === 'trust_verified'),
@@ -366,8 +373,8 @@ export default function DriverProfilePage() {
                     ) : (
                       <div className="space-y-6">
                         {credentials.map((cred) => {
-                          const certifyBase = process.env.NEXT_PUBLIC_CERTIFY_BASE_URL ?? 'http://localhost:8090';
-                          const deepLink = buildWalletDeepLink(certifyBase, cred.template_name ?? 'SafeRideDriverCredential');
+                          const claimLinks = cred.claim_links;
+                          const deepLink = claimLinks?.wallet_deep_link ?? null;
                           return (
                             <div key={cred.id} className="rounded-lg border border-slate-200 p-4 space-y-4">
                               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -385,7 +392,13 @@ export default function DriverProfilePage() {
                               </div>
                               <div className="flex flex-col sm:flex-row gap-6 items-start">
                                 <div className="rounded-lg bg-white border border-slate-200 p-3 shadow-sm">
-                                  <QRCodeSVG value={deepLink} size={140} level="M" />
+                                  {deepLink ? (
+                                    <QRCodeSVG value={deepLink} size={140} level="M" />
+                                  ) : (
+                                    <div className="flex h-[140px] w-[140px] items-center justify-center rounded bg-slate-50 text-center text-xs text-slate-400">
+                                      Claim link unavailable
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="space-y-2 text-sm flex-1">
                                   <p className="font-medium text-slate-700">Claim in Inji Wallet</p>
@@ -400,7 +413,45 @@ export default function DriverProfilePage() {
                                       Issued: {new Date(cred.issued_at).toLocaleString()}
                                     </p>
                                   ) : null}
-                                  <p className="break-all font-mono text-[10px] text-slate-400 pt-1">{deepLink.slice(0, 80)}…</p>
+                                  {claimLinks ? (
+                                    <>
+                                      <p className="text-[11px] text-slate-500">
+                                        Issuer metadata:{' '}
+                                        <span className="font-mono break-all">{claimLinks.issuer_metadata_url}</span>
+                                      </p>
+                                      {deepLink ? (
+                                        <div className="flex flex-wrap gap-2 pt-2">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            className="bg-indigo-600 text-white hover:bg-indigo-700"
+                                            onClick={() => {
+                                              window.location.href = deepLink;
+                                            }}
+                                          >
+                                            Open wallet link
+                                          </Button>
+                                          {claimLinks.inji_web_url ? (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() => window.open(claimLinks.inji_web_url!, '_blank', 'noopener,noreferrer')}
+                                            >
+                                              Open Inji Web
+                                            </Button>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                      <p className="break-all font-mono text-[10px] text-slate-400 pt-1">
+                                        {claimLinks.credential_configuration_id}
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <p className="text-xs text-amber-700">
+                                      Claim links are unavailable until the backend is configured with the Inji issuer URL.
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </div>
