@@ -14,7 +14,7 @@ SafeRide runs as three independently-managed Docker stacks that share a single D
 │                                                                             │
 │  ┌──────────────────────────────────┐  ┌──────────────────────────────────┐ │
 │  │  eSignet stack                   │  │  Inji Certify stack               │ │
-│  │  /PythonScripts/esignet/         │  │  /SAFERIDE/inji/docker-compose/  │ │
+│  │  /SAFERIDE/esignet/              │  │  /SAFERIDE/inji/docker-compose/  │ │
 │  │  docker-compose/                 │  │  docker-compose-injistack/       │ │
 │  │                                  │  │                                  │ │
 │  │  postgres:16  (:5455→5432)       │  │  postgres:15  (:5433→5432)       │ │
@@ -57,7 +57,7 @@ SafeRide runs as three independently-managed Docker stacks that share a single D
 │   ├── .env / .env.example        # Frontend env vars
 │   └── next.config.ts             # Next.js config (standalone output, HMR flag)
 │
-├── inji/                          ← Inji Certify stack
+├── inji/                          ← Inji Certify stack (git submodule)
 │   └── docker-compose/
 │       └── docker-compose-injistack/
 │           ├── docker-compose.yaml
@@ -73,7 +73,7 @@ SafeRide runs as three independently-managed Docker stacks that share a single D
 │               ├── mimoto-issuers-config.json   ← includes SafeRide issuer
 │               └── mimoto-default.properties
 │
-└── (PythonScripts/esignet/)       ← eSignet stack (separate location)
+└── esignet/                       ← eSignet stack (git submodule)
     └── docker-compose/
         ├── docker-compose.yml
         ├── nginx.conf              # oidc-ui proxy config (port 3000)
@@ -100,7 +100,7 @@ docker network create mosip_network
 
 ### Stack 1 — eSignet
 
-**Location:** `/home/kofivi/PythonScripts/esignet/docker-compose/`
+**Location:** `/home/kofivi/SAFERIDE/esignet/docker-compose/`
 
 #### Services
 
@@ -130,7 +130,7 @@ docker network create mosip_network
 #### Starting the eSignet stack
 
 ```bash
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 docker compose up -d
 ```
 
@@ -146,7 +146,7 @@ curl http://localhost:8088/v1/esignet/actuator/health
 After first boot (or after key reset), register `saferide-client` with eSignet:
 
 ```bash
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 ./register_saferide_client.sh
 # optionally override defaults:
 ./register_saferide_client.sh http://localhost:8088 /path/to/esignet_public.pem
@@ -163,7 +163,7 @@ The script:
 If eSignet fails to start with a `No such alias` error (stale DB key aliases after a container recreate):
 
 ```bash
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 ./reset_esignet_keys.sh
 ```
 
@@ -322,7 +322,7 @@ openssl rsa -in keys/esignet_private.pem -pubout -out keys/esignet_public.pem
 Then register with eSignet:
 
 ```bash
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 ./register_saferide_client.sh http://localhost:8088 \
   /home/kofivi/SAFERIDE/saferide/backend/keys/esignet_public.pem
 ```
@@ -502,7 +502,7 @@ Start everything in this order:
 docker network create mosip_network
 
 # 2. eSignet stack (Postgres + Redis + mock-identity + eSignet + UI)
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 docker compose up -d
 
 # 3. Wait for eSignet to be healthy (~60s first boot)
@@ -814,7 +814,7 @@ PASSENGER (feature phone)        USSD SIMULATOR           SAFERIDE BACKEND
 Stale key aliases in the database from a previous keystore. Fix:
 
 ```bash
-cd /home/kofivi/PythonScripts/esignet/docker-compose
+cd /home/kofivi/SAFERIDE/esignet/docker-compose
 ./reset_esignet_keys.sh
 ```
 
