@@ -37,7 +37,7 @@ SafeRide runs as three independently-managed Docker stacks that share a single D
 ## Repository layout
 
 ```
-/home/kofivi/SAFERIDE/
+SAFERIDE/
 ├── saferide/                      ← THIS REPO (Next.js + FastAPI)
 │   ├── app/                       # Next.js App Router (pages + layouts)
 │   ├── components/                # Shared UI components
@@ -102,7 +102,7 @@ docker network create mosip_network
 
 ### Stack 1 — eSignet
 
-**Location:** `/home/kofivi/SAFERIDE/esignet/docker-compose/`
+**Location:** `esignet/docker-compose/`
 
 #### Services
 
@@ -132,7 +132,7 @@ docker network create mosip_network
 #### Starting the eSignet stack
 
 ```bash
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 docker compose up -d
 ```
 
@@ -148,7 +148,7 @@ curl http://localhost:8088/v1/esignet/actuator/health
 After first boot (or after key reset), register `saferide-client` with eSignet:
 
 ```bash
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 ./register_saferide_client.sh
 # optionally override defaults:
 ./register_saferide_client.sh http://localhost:8088 /path/to/esignet_public.pem
@@ -165,7 +165,7 @@ The script:
 If eSignet fails to start with a `No such alias` error (stale DB key aliases after a container recreate):
 
 ```bash
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 ./reset_esignet_keys.sh
 ```
 
@@ -178,7 +178,7 @@ The script:
 
 ### Stack 2 — Inji Certify
 
-**Location:** `/home/kofivi/SAFERIDE/inji/docker-compose/docker-compose-injistack/`
+**Location:** `inji/docker-compose/docker-compose-injistack/`
 
 #### Services
 
@@ -247,14 +247,14 @@ Proxies and adds CORS headers for:
 #### Starting the Inji stack
 
 ```bash
-cd /home/kofivi/SAFERIDE/inji/docker-compose/docker-compose-injistack
+cd inji/docker-compose/docker-compose-injistack
 docker compose up -d
 ```
 
 Or using the top-level installer (creates the network, then offers a menu):
 
 ```bash
-cd /home/kofivi/SAFERIDE/inji/docker-compose
+cd inji/docker-compose
 bash install.sh
 # select "2. Certify"
 ```
@@ -274,7 +274,7 @@ curl http://localhost:8099/v1/mimoto/actuator/health
 After the Inji stack is healthy, upsert the working SafeRide credential config from the repository payload:
 
 ```bash
-cd /home/kofivi/SAFERIDE/saferide/backend
+cd saferide/backend
 uv run python scripts/setup_inji_config.py
 ```
 
@@ -339,7 +339,7 @@ docker compose down -v
 The backend uses an RSA key pair for `private_key_jwt` client authentication with eSignet. Generate once and register the public key with eSignet:
 
 ```bash
-cd /home/kofivi/SAFERIDE/saferide/backend
+cd saferide/backend
 mkdir -p keys
 # Generate 2048-bit RSA key pair
 openssl genrsa -out keys/esignet_private.pem 2048
@@ -349,9 +349,9 @@ openssl rsa -in keys/esignet_private.pem -pubout -out keys/esignet_public.pem
 Then register with eSignet:
 
 ```bash
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 ./register_saferide_client.sh http://localhost:8088 \
-  /home/kofivi/SAFERIDE/saferide/backend/keys/esignet_public.pem
+  saferide/backend/keys/esignet_public.pem
 ```
 
 ---
@@ -580,7 +580,7 @@ Start everything in this order:
 docker network create mosip_network
 
 # 2. eSignet stack (Postgres + Redis + mock-identity + eSignet + UI)
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 docker compose up -d
 
 # 3. Wait for eSignet to be healthy (~60s first boot)
@@ -590,11 +590,11 @@ curl http://localhost:8088/v1/esignet/actuator/health
 ./register_saferide_client.sh
 
 # 5. Inji Certify stack
-cd /home/kofivi/SAFERIDE/inji/docker-compose/docker-compose-injistack
+cd inji/docker-compose/docker-compose-injistack
 docker compose up -d
 
 # 6. SafeRide backend + frontend
-cd /home/kofivi/SAFERIDE/saferide
+cd saferide
 make install   # first time only
 make dev
 ```
@@ -911,7 +911,7 @@ PASSENGER (feature phone)        USSD SIMULATOR           SAFERIDE BACKEND
 Stale key aliases in the database from a previous keystore. Fix:
 
 ```bash
-cd /home/kofivi/SAFERIDE/esignet/docker-compose
+cd esignet/docker-compose
 ./reset_esignet_keys.sh
 ```
 
