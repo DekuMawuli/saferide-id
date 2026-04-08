@@ -16,7 +16,7 @@ from app.core.config import Settings
 
 # Cookie used to bind the browser to the OIDC `state` parameter (CSRF mitigation).
 OAUTH_STATE_COOKIE_NAME = "sr_esignet_oauth"
-OAUTH_STATE_TTL_SECONDS = 600
+OAUTH_STATE_TTL_SECONDS = 1800
 ALGORITHM_HS256 = "HS256"
 
 

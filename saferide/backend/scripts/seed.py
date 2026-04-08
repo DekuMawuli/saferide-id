@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
+from app.core.security import hash_password
 from app.db.models.corporate_body import CorporateBody
 from app.db.models.operator import Operator
 from app.db.models.operator_vehicle_binding import OperatorVehicleBinding
@@ -35,6 +36,19 @@ def _utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 # Seed data — individual_id values must exist in mock-identity-system
 # ---------------------------------------------------------------------------
+
+ADMIN_DEFAULT_PASSWORD = "SafeRide@Admin1"
+
+ADMINS = [
+    {
+        "external_subject_id": "local:admin@saferide.local",
+        "full_name": "System Administrator",
+        "email": "admin@saferide.local",
+        "role": "system_admin",
+        "auth_provider": "local",
+        "status": "ACTIVE",
+    },
+]
 
 CORPORATE_BODIES = [
     {"name": "SafeRide Kigali SACCO", "code": "SR-KGL-001", "description": "Main Kigali operator SACCO"},
@@ -76,7 +90,23 @@ BINDINGS = {
 
 
 def seed(session: Session) -> None:
-    print("Seeding corporate bodies...")
+    print("Seeding system admins...")
+    for admin_data in ADMINS:
+        existing = session.exec(
+            select(Operator).where(Operator.email == admin_data["email"])
+        ).first()
+        if existing:
+            print(f"  skip admin '{admin_data['email']}' (already exists)")
+        else:
+            admin = Operator(
+                **admin_data,
+                password_hash=hash_password(ADMIN_DEFAULT_PASSWORD),
+            )
+            session.add(admin)
+            session.flush()
+            print(f"  created admin '{admin_data['email']}' (password: {ADMIN_DEFAULT_PASSWORD})")
+
+    print("\nSeeding corporate bodies...")
     corp_map: dict[str, CorporateBody] = {}
     for cb_data in CORPORATE_BODIES:
         existing = session.exec(

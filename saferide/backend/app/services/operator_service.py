@@ -18,11 +18,37 @@ def upsert_operator_from_claims(session: Session, normalized: dict) -> Operator:
     """
     Find by `external_subject_id` or insert; refresh profile fields on each login.
 
+    Falls back to phone-number matching so that seeded/pre-registered operators
+    are linked to their real eSignet identity on first login rather than creating
+    a duplicate record.  When a phone match is found the `external_subject_id` is
+    updated to the real eSignet sub so all future lookups hit the primary index.
+
     `normalized` is produced by `ESignetService.normalize_claims`.
     """
+    import logging
+    _log = logging.getLogger(__name__)
+
     sub = normalized["external_subject_id"]
     stmt = select(Operator).where(Operator.external_subject_id == sub)
     existing = session.exec(stmt).first()
+
+    # Phone-based identity reconciliation: if no exact sub match, look up by
+    # phone so that pre-seeded operators are linked on first real eSignet login.
+    if existing is None:
+        phone = (normalized.get("phone") or "").strip().replace(" ", "")
+        if phone:
+            phone_variants = [phone, f"+{phone}"] if not phone.startswith("+") else [phone, phone[1:]]
+            existing = session.exec(
+                select(Operator).where(Operator.phone.in_(phone_variants))
+            ).first()
+            if existing is not None:
+                _log.info(
+                    "operator_service: linking eSignet sub to existing operator via phone "
+                    "operator_id=%s old_sub=%s new_sub=%s phone=%s",
+                    existing.id, existing.external_subject_id, sub, phone,
+                )
+                existing.external_subject_id = sub
+
     now = _utcnow()
 
     if existing:

@@ -14,6 +14,8 @@ from app.db.models.credential import Credential
 from app.db.models.operator import Operator
 from app.db.models.operator_vehicle_binding import OperatorVehicleBinding
 from app.db.models.vehicle import Vehicle
+from app.db.session import get_engine
+from app.services.esignet_service import ESignetService, VCI_SCOPE
 from app.services.inji_certify_service import InjiCertifyConfigError, InjiCertifyService
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,36 @@ def save_credential_record(
     return cred
 
 
+def _find_reusable_issued_credential(
+    session: Session,
+    *,
+    operator_id: UUID,
+    credential_type: str,
+    template_name: str | None,
+    vehicle_id: UUID | None = None,
+) -> Credential | None:
+    stmt = (
+        select(Credential)
+        .where(Credential.operator_id == operator_id)
+        .where(Credential.credential_type == credential_type)
+        .where(Credential.status == "ISSUED")
+        .order_by(Credential.issued_at.desc(), Credential.created_at.desc())
+    )
+    if vehicle_id is None:
+        stmt = stmt.where(Credential.vehicle_id.is_(None))
+    else:
+        stmt = stmt.where(Credential.vehicle_id == vehicle_id)
+    if template_name:
+        stmt = stmt.where(Credential.template_name == template_name)
+    existing = session.exec(stmt).first()
+    if existing is None:
+        return None
+    now = _now_utc()
+    if existing.expires_at is not None and existing.expires_at <= now:
+        return None
+    return existing
+
+
 async def issue_operator_credential(
     session: Session,
     operator_id: UUID,
@@ -123,18 +155,35 @@ async def issue_operator_credential(
         )
         raise CredentialIssuanceError(reason, status_code=409)
 
-    # Fall back to the stored eSignet token when no token is passed explicitly
-    if access_token is None and operator.esignet_last_access_token:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if operator.esignet_token_expires_at is None or operator.esignet_token_expires_at > now:
-            access_token = operator.esignet_last_access_token
-            logger.info("credential.issue_operator: using stored esignet token operator_id=%s", operator_id)
-        else:
-            logger.warning(
-                "credential.issue_operator: stored esignet token expired operator_id=%s expired_at=%s",
-                operator_id,
-                operator.esignet_token_expires_at,
-            )
+    if not (operator.individual_id or "").strip():
+        raise CredentialIssuanceError(
+            "Operator is missing individual_id required for SafeRideDriverCredential issuance",
+            status_code=409,
+        )
+
+    if access_token is not None:
+        logger.info(
+            "credential.issue_operator: caller token provided without c_nonce; minting a dedicated VCI token instead operator_id=%s",
+            operator_id,
+        )
+
+    try:
+        vci_tokens = await ESignetService(settings).exchange_vci_token(
+            individual_id=operator.individual_id,
+            scope=VCI_SCOPE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "credential.issue_operator: failed to mint VCI token operator_id=%s error=%s",
+            operator_id,
+            exc,
+        )
+        raise CredentialIssuanceError(
+            f"Could not obtain eSignet credential token: {exc}",
+            status_code=502,
+        ) from exc
+    access_token = vci_tokens.access_token
+    proof_nonce = vci_tokens.c_nonce
 
     logger.info(
         "credential.issue_operator: starting issuance operator_id=%s name=%r phone=%s certify_url=%s",
@@ -143,9 +192,27 @@ async def issue_operator_credential(
         operator.phone,
         settings.inji_certify_base_url,
     )
+    existing = _find_reusable_issued_credential(
+        session,
+        operator_id=operator.id,
+        vehicle_id=None,
+        credential_type=CREDENTIAL_TYPE_OPERATOR,
+        template_name=settings.inji_certify_operator_credential_template,
+    )
+    if existing is not None:
+        logger.info(
+            "credential.issue_operator: reusing existing credential operator_id=%s credential_id=%s",
+            operator_id,
+            existing.id,
+        )
+        return existing
     inji = InjiCertifyService(settings)
     try:
-        raw = await inji.issue_operator_credential(operator, access_token=access_token)
+        raw = await inji.issue_operator_credential(
+            operator,
+            access_token=access_token,
+            proof_nonce=proof_nonce,
+        )
     except InjiCertifyConfigError as exc:
         logger.error("credential.issue_operator: config error operator_id=%s error=%s", operator_id, exc)
         raise CredentialIssuanceError(str(exc), status_code=503) from exc
@@ -214,6 +281,12 @@ async def issue_vehicle_binding_credential(
     if not ok:
         raise CredentialIssuanceError(reason, status_code=409)
 
+    if not (operator.individual_id or "").strip():
+        raise CredentialIssuanceError(
+            "Operator is missing individual_id required for SafeRideDriverCredential issuance",
+            status_code=409,
+        )
+
     stmt = (
         select(OperatorVehicleBinding)
         .where(OperatorVehicleBinding.operator_id == operator_id)
@@ -231,10 +304,53 @@ async def issue_vehicle_binding_credential(
             status_code=409,
         )
 
+    if access_token is not None:
+        logger.info(
+            "credential.issue_vehicle: caller token provided without c_nonce; minting a dedicated VCI token instead operator_id=%s",
+            operator_id,
+        )
+    try:
+        vci_tokens = await ESignetService(settings).exchange_vci_token(
+            individual_id=operator.individual_id,
+            scope=VCI_SCOPE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "credential.issue_vehicle: failed to mint VCI token operator_id=%s error=%s",
+            operator_id,
+            exc,
+        )
+        raise CredentialIssuanceError(
+            f"Could not obtain eSignet credential token: {exc}",
+            status_code=502,
+        ) from exc
+    access_token = vci_tokens.access_token
+    proof_nonce = vci_tokens.c_nonce
+
+    existing = _find_reusable_issued_credential(
+        session,
+        operator_id=operator.id,
+        vehicle_id=vehicle.id,
+        credential_type=CREDENTIAL_TYPE_VEHICLE_BINDING,
+        template_name=settings.inji_certify_vehicle_credential_template,
+    )
+    if existing is not None:
+        logger.info(
+            "credential.issue_vehicle: reusing existing credential operator_id=%s vehicle_id=%s credential_id=%s",
+            operator_id,
+            vehicle_id,
+            existing.id,
+        )
+        return existing
+
     inji = InjiCertifyService(settings)
     try:
         raw = await inji.issue_vehicle_binding_credential(
-            operator, vehicle, binding, access_token=access_token
+            operator,
+            vehicle,
+            binding,
+            access_token=access_token,
+            proof_nonce=proof_nonce,
         )
     except InjiCertifyConfigError as exc:
         raise CredentialIssuanceError(str(exc), status_code=503) from exc
@@ -266,3 +382,18 @@ async def issue_vehicle_binding_credential(
 
 def get_credential(session: Session, credential_id: UUID) -> Credential | None:
     return session.get(Credential, credential_id)
+
+
+async def issue_operator_credential_detached(
+    operator_id: UUID,
+    settings: Settings,
+    *,
+    access_token: str | None = None,
+) -> Credential:
+    with Session(get_engine()) as session:
+        return await issue_operator_credential(
+            session,
+            operator_id,
+            settings,
+            access_token=access_token,
+        )

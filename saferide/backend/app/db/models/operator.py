@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import ClassVar
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel
+from sqlalchemy import Text
+from sqlmodel import Column, Field, SQLModel
 
 
 def _utcnow() -> datetime:
@@ -26,7 +27,7 @@ class Operator(SQLModel, table=True):
         description="Only for local staff/admin login; eSignet users keep this null",
     )
     phone: str | None = Field(default=None, max_length=64)
-    photo_ref: str | None = Field(default=None, max_length=2048)
+    photo_ref: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     individual_id: str | None = Field(default=None, max_length=256)
     gender: str | None = Field(default=None, max_length=32)
     birthdate: str | None = Field(default=None, max_length=32)
@@ -36,7 +37,7 @@ class Operator(SQLModel, table=True):
     acr: str | None = Field(default=None, max_length=256)
 
     esignet_verified_at: datetime | None = Field(default=None)
-    esignet_last_access_token: str | None = Field(default=None, max_length=4096)
+    esignet_last_access_token: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     esignet_token_expires_at: datetime | None = Field(default=None)
     status: str = Field(default="PENDING", max_length=32)
     verify_short_code: str | None = Field(

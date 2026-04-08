@@ -24,7 +24,7 @@ class OAuthTxn:
 class InMemoryOAuthStateStore:
     """Simple swappable store; replace with Redis implementation in production clusters."""
 
-    def __init__(self, ttl_seconds: int = 600) -> None:
+    def __init__(self, ttl_seconds: int = 1800) -> None:
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
         self._rows: dict[str, OAuthTxn] = {}

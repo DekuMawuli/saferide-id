@@ -58,7 +58,7 @@ from app.services.operator_service import upsert_operator_from_claims
 from app.services.credential_service import (
     CredentialIssuanceError,
     can_issue_operator_credential,
-    issue_operator_credential,
+    issue_operator_credential_detached,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ async def esignet_login(
     if (response_mode or "").lower() == "json":
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content=AuthStartResponse(authorization_url=url, state=txn.state, expires_in=600).model_dump(),
+            content=AuthStartResponse(authorization_url=url, state=txn.state, expires_in=1800).model_dump(),
         )
     logger.info("auth.esignet.login: 302 to IdP")
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
@@ -269,9 +269,16 @@ async def esignet_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Issuer mismatch in callback")
     txn = oauth_state_store.consume(state)
     if txn is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired state; restart login from /auth/esignet/login",
+        logger.warning("auth.esignet.callback: invalid or expired state=%s", state[:12] if state else "")
+        if (response_mode or "").lower() == "json":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired state; restart login from /auth/esignet/login",
+            )
+        base = settings.frontend_app_url.rstrip("/")
+        return RedirectResponse(
+            url=f"{base}/login?error=session_expired",
+            status_code=status.HTTP_302_FOUND,
         )
 
     logger.debug("auth.esignet.callback: exchanging authorization code for tokens")
@@ -472,8 +479,7 @@ async def esignet_callback(
             import asyncio
             async def _issue_vc() -> None:
                 try:
-                    await issue_operator_credential(
-                        session,
+                    await issue_operator_credential_detached(
                         operator.id,
                         settings,
                         access_token=tokens.access_token,
