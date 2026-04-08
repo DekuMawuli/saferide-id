@@ -1,0 +1,6 @@
+[submodule "esignet"]
+	path = esignet
+	url = https://github.com/mosip/esignet.git
+[submodule "inji"]
+	path = inji
+	url = git@github.com:Joe-Ineza/inji-wallet-safeRide.git
