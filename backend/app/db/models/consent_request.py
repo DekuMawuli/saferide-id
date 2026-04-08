@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -10,7 +11,32 @@ from sqlmodel import Field, SQLModel
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class ConsentRequestStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    DENIED = "DENIED"
+    EXPIRED = "EXPIRED"
+
+
+# create enum for channel
+class Channel(str, Enum):
+    WEB = "WEB"
+    SMS = "SMS"
+    USSD = "USSD"
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __repr__(self) -> str:
+        return self.value
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Channel):
+            return False
+        return self.value == other.value
 
 
 class ConsentRequest(SQLModel, table=True):
@@ -18,8 +44,8 @@ class ConsentRequest(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     operator_id: UUID = Field(foreign_key="operators.id", index=True)
-    status: str = Field(default="pending", max_length=32)  # pending|approved|denied|expired
-    channel: str = Field(default="web", max_length=32)
+    status: str = Field(default=ConsentRequestStatus.PENDING, max_length=32)  # pending|approved|denied|expired
+    channel: str = Field(default=Channel.WEB, max_length=32)
     passenger_msisdn: str | None = Field(default=None, max_length=32)
     verify_short_code: str = Field(max_length=16, index=True)
     disclosure_token: str | None = Field(default=None, max_length=64, index=True)

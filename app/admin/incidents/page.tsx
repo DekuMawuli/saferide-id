@@ -1,37 +1,51 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Search, MoreHorizontal, Filter, Download, AlertOctagon } from 'lucide-react';
-import { mockIncidents } from '@/lib/mock-data';
+import { ArrowLeft, Search, Filter, Download, AlertOctagon } from 'lucide-react';
+import { fetchSimSmsOutbox, type SimSmsRow } from '@/lib/api/public-trust';
+import { ApiError } from '@/lib/api/client';
+import { toast } from 'sonner';
 
 export default function AdminIncidentsPage() {
   const [searchTerm, setSearchTerm] = useState('');
+  const [rows, setRows] = useState<SimSmsRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filteredIncidents = mockIncidents.filter(incident => 
-    incident.operatorCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    incident.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    incident.status.toLowerCase().includes(searchTerm.toLowerCase())
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const sms = await fetchSimSmsOutbox(300);
+        setRows(sms.filter((r) => r.tag === 'report' || r.tag === 'panic'));
+      } catch (e) {
+        toast.error(e instanceof ApiError ? e.message : 'Failed to load incidents');
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+  }, []);
+
+  const filteredIncidents = useMemo(
+    () =>
+      rows.filter((r) =>
+        `${r.tag} ${r.to} ${r.body}`.toLowerCase().includes(searchTerm.toLowerCase()),
+      ),
+    [rows, searchTerm],
   );
 
-  const renderStatusBadge = (status: string) => {
-    switch (status) {
-      case 'open':
-        return <Badge variant="destructive" className="bg-red-100 text-red-800 hover:bg-red-100 border-red-200">Open</Badge>;
-      case 'investigating':
-        return <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100 border-amber-200">Investigating</Badge>;
-      case 'resolved':
-        return <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-emerald-200">Resolved</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
+  const renderStatusBadge = (tag: string) =>
+    tag === 'panic' ? (
+      <Badge variant="destructive" className="bg-red-100 text-red-800 hover:bg-red-100 border-red-200">Open</Badge>
+    ) : (
+      <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100 border-amber-200">Reported</Badge>
+    );
 
   const renderSeverityBadge = (severity: string) => {
     switch (severity) {
@@ -98,48 +112,34 @@ export default function AdminIncidentsPage() {
                   <TableRow>
                     <TableHead className="font-semibold text-slate-700">ID</TableHead>
                     <TableHead className="font-semibold text-slate-700">Date</TableHead>
-                    <TableHead className="font-semibold text-slate-700">Operator ID</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Target</TableHead>
                     <TableHead className="font-semibold text-slate-700">Type</TableHead>
                     <TableHead className="font-semibold text-slate-700">Severity</TableHead>
                     <TableHead className="font-semibold text-slate-700">Status</TableHead>
-                    <TableHead className="text-right font-semibold text-slate-700">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredIncidents.length > 0 ? (
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredIncidents.length > 0 ? (
                     filteredIncidents.map((incident) => (
                       <TableRow key={incident.id} className="hover:bg-slate-50/50 transition-colors">
                         <TableCell className="font-mono font-medium text-indigo-950">{incident.id}</TableCell>
-                        <TableCell className="text-sm text-slate-600">{new Date(incident.date).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          <Link href={`/admin/operators/${incident.operatorCode}`} className="font-medium text-indigo-600 hover:underline">
-                            {incident.operatorCode}
-                          </Link>
-                        </TableCell>
-                        <TableCell className="capitalize text-slate-600">{incident.type.replace('-', ' ')}</TableCell>
-                        <TableCell>{renderSeverityBadge(incident.severity)}</TableCell>
-                        <TableCell>{renderStatusBadge(incident.status)}</TableCell>
-                        <TableCell className="text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-slate-100">
-                              <span className="sr-only">Open menu</span>
-                              <MoreHorizontal className="h-4 w-4" />
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                              <DropdownMenuItem>View Details</DropdownMenuItem>
-                              <DropdownMenuItem>Update Status</DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem className="text-red-600">Escalate</DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
+                        <TableCell className="text-sm text-slate-600">{new Date(incident.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell className="font-mono text-xs">{incident.to}</TableCell>
+                        <TableCell className="capitalize text-slate-600">{incident.tag}</TableCell>
+                        <TableCell>{renderSeverityBadge(incident.tag === 'panic' ? 'high' : 'medium')}</TableCell>
+                        <TableCell>{renderStatusBadge(incident.tag)}</TableCell>
                       </TableRow>
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                        No incidents found matching your search.
+                      <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                        No incident stream rows yet (panic/report SMS simulator).
                       </TableCell>
                     </TableRow>
                   )}
@@ -148,7 +148,7 @@ export default function AdminIncidentsPage() {
             </div>
             
             <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
-              <div>Showing {filteredIncidents.length} of {mockIncidents.length} incidents</div>
+              <div>Showing {filteredIncidents.length} of {rows.length} incidents</div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" disabled>Previous</Button>
                 <Button variant="outline" size="sm" disabled>Next</Button>

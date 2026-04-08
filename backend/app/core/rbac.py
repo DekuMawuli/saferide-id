@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 # Roles persisted on Operator (lowercase).
-OPERATOR_ROLES: frozenset[str] = frozenset({"passenger", "driver", "officer", "admin"})
+OPERATOR_ROLES: frozenset[str] = frozenset(
+    {"passenger", "driver", "officer", "admin", "monitor", "support", "system_admin"}
+)
 DEFAULT_ROLE = "driver"
 
 # Relative paths on the frontend app (must match Next.js routes).
 ROLE_HOME_PATH: dict[str, str] = {
-    "passenger": "/",
+    "passenger": "/rider/status",
     "driver": "/driver/profile",
     "officer": "/portal",
     "admin": "/admin",
+    "monitor": "/admin",
+    "support": "/portal",
+    "system_admin": "/admin",
 }
 
 
@@ -70,7 +75,10 @@ def next_path_allowed_for_role(path: str, role: str) -> bool:
     prefix_by_role = {
         "driver": "/driver",
         "officer": "/portal",
+        "support": "/portal",
         "admin": "/admin",
+        "monitor": "/admin",
+        "system_admin": "/admin",
     }
     prefix = prefix_by_role.get(r, "")
     return path == prefix or path.startswith(f"{prefix}/")

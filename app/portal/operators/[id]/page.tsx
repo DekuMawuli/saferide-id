@@ -2,31 +2,33 @@
 
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+
 import { ArrowLeft, Car, FileText, QrCode } from 'lucide-react';
 import { ApiError } from '@/lib/api/client';
 import {
   bindVehicleToOperator,
+  fetchOperatorEsignetDebug,
   fetchOperatorProfile,
   fetchOperatorVehicleBindings,
   fetchVehicles,
   patchBindingActive,
   patchOperatorStatus,
 } from '@/lib/api/governance';
+import { Combobox } from '@/components/ui/combobox';
 import { getPublicAppOrigin } from '@/lib/app-url';
-import type { OperatorRead, OperatorVehicleBindingListItem, VehicleRead } from '@/lib/api/types';
+import type {
+  ESignetDebugRead,
+  OperatorRead,
+  OperatorVehicleBindingListItem,
+  VehicleListItem,
+} from '@/lib/api/types';
 import { toast } from 'sonner';
 
 function statusBadge(status: string) {
@@ -52,10 +54,13 @@ function statusBadge(status: string) {
 export default function OperatorDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const operatorId = resolvedParams.id;
+  const searchParams = useSearchParams();
+  const fromEsignet = searchParams.get('esignet') === '1';
   const [loading, setLoading] = useState(true);
   const [operator, setOperator] = useState<OperatorRead | null>(null);
+  const [esignetDebug, setEsignetDebug] = useState<ESignetDebugRead | null>(null);
   const [bindings, setBindings] = useState<OperatorVehicleBindingListItem[]>([]);
-  const [vehicles, setVehicles] = useState<VehicleRead[]>([]);
+  const [vehicles, setVehicles] = useState<VehicleListItem[]>([]);
   const [vehiclePick, setVehiclePick] = useState<string>('');
 
   const refresh = useCallback(async () => {
@@ -69,13 +74,23 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
       setOperator(op);
       setBindings(binds);
       setVehicles(vehs);
+      if (fromEsignet) {
+        try {
+          const debug = await fetchOperatorEsignetDebug(operatorId);
+          setEsignetDebug(debug);
+        } catch {
+          setEsignetDebug(null);
+        }
+      } else {
+        setEsignetDebug(null);
+      }
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : 'Failed to load operator');
+      toast.error(e instanceof ApiError ? e.message : 'Failed to load rider/driver');
       setOperator(null);
     } finally {
       setLoading(false);
     }
-  }, [operatorId]);
+  }, [fromEsignet, operatorId]);
 
   useEffect(() => {
     void refresh();
@@ -132,7 +147,7 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
             className="inline-flex items-center text-sm font-medium text-indigo-600 hover:text-indigo-800"
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Operators
+            Riders / Drivers
           </Link>
         </div>
 
@@ -146,29 +161,97 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
           </div>
         ) : operator ? (
           <div className="animate-in fade-in space-y-6 duration-500">
+            {fromEsignet ? (
+              <Card className="border-emerald-200 bg-emerald-50/70 shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-emerald-900">eSignet onboarding complete</CardTitle>
+                  <CardDescription>
+                    Rider account was created/updated from eSignet and is now ready for officer review.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                  <div>
+                    <p className="text-muted-foreground">Name</p>
+                    <p className="font-medium text-slate-900">{operator.full_name?.trim() || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Phone</p>
+                    <p className="font-medium text-slate-900">{operator.phone || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Email</p>
+                    <p className="font-medium text-slate-900">{operator.email || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">eSignet Subject</p>
+                    <p className="break-all font-mono text-xs text-slate-900">{operator.external_subject_id || '—'}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+            {fromEsignet && esignetDebug ? (
+              <Card className="border-slate-200 shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-slate-900">Raw eSignet payload</CardTitle>
+                  <CardDescription>
+                    Captured at {new Date(esignetDebug.created_at * 1000).toLocaleString()}.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(JSON.stringify(esignetDebug, null, 2));
+                      toast.success('Copied eSignet payload');
+                    }}
+                  >
+                    Copy payload
+                  </Button>
+                  <pre className="max-h-72 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
+                    {JSON.stringify(esignetDebug, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            ) : null}
             <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
               <div className="flex flex-col items-start gap-2 md:flex-row md:items-center md:gap-4">
                 <h1 className="text-3xl font-bold text-indigo-950">
-                  {operator.full_name?.trim() || 'Operator'}
+                  {operator.full_name?.trim() || 'Rider / Driver'}
                 </h1>
                 {statusBadge(operator.status)}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={() => void onStatus('APPROVED')}>
-                  Approve
-                </Button>
-                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => void onStatus('ACTIVE')}>
-                  Set active
-                </Button>
-                <Button size="sm" variant="destructive" onClick={() => void onStatus('SUSPENDED')}>
-                  Suspend
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => void onStatus('EXPIRED')}>
-                  Mark expired
-                </Button>
-                <Button size="sm" variant="secondary" onClick={() => void onStatus('PENDING')}>
-                  Reset pending
-                </Button>
+                {operator.status === 'PENDING' && (
+                  <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => void onStatus('APPROVED')}>
+                    Approve
+                  </Button>
+                )}
+                {operator.status === 'APPROVED' && (
+                  <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => void onStatus('ACTIVE')}>
+                    Set active
+                  </Button>
+                )}
+                {(operator.status === 'SUSPENDED' || operator.status === 'EXPIRED') && (
+                  <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => void onStatus('ACTIVE')}>
+                    Reactivate
+                  </Button>
+                )}
+                {(operator.status === 'ACTIVE' || operator.status === 'APPROVED') && (
+                  <Button size="sm" variant="destructive" onClick={() => void onStatus('SUSPENDED')}>
+                    Suspend
+                  </Button>
+                )}
+                {(operator.status === 'ACTIVE' || operator.status === 'APPROVED') && (
+                  <Button size="sm" variant="outline" onClick={() => void onStatus('EXPIRED')}>
+                    Mark expired
+                  </Button>
+                )}
+                {operator.status !== 'PENDING' && (
+                  <Button size="sm" variant="secondary" onClick={() => void onStatus('PENDING')}>
+                    Reset to pending
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -250,7 +333,7 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
                           </h3>
                           <dl className="grid grid-cols-1 gap-y-4 sm:grid-cols-2 sm:gap-x-4">
                             <div>
-                              <dt className="text-sm font-medium text-muted-foreground">Operator ID</dt>
+                              <dt className="text-sm font-medium text-muted-foreground">Rider/Driver ID</dt>
                               <dd className="mt-1 font-mono text-sm text-slate-900">{operator.id}</dd>
                             </div>
                             <div>
@@ -320,24 +403,36 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                           <div className="flex-1 space-y-2">
                             <label className="text-sm font-medium">Vehicle</label>
-                            <Select
+                            <Combobox
+                              label={undefined}
+                              items={vehicles.map(({ vehicle: v }) => ({
+                                id: v.id,
+                                label: v.display_name ?? v.external_ref ?? v.id,
+                                searchText: `${v.display_name || ''} ${v.external_ref || ''} ${v.make_model || ''} ${v.vehicle_type || ''} ${v.id}`,
+                              }))}
                               value={vehiclePick}
-                              onValueChange={(v) => setVehiclePick(v ?? '')}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select plate…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {vehicles.map((v) => (
-                                  <SelectItem key={v.id} value={v.id}>
-                                    {v.external_ref ?? v.display_name ?? v.id}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              onChange={(id) => setVehiclePick(id)}
+                              searchPlaceholder="Search plate, name, or ID…"
+                              emptyText="No vehicles found"
+                            />
+                            {vehiclePick ? (
+                              <p className="text-xs text-muted-foreground">
+                                Selected:{' '}
+                                <span className="font-medium text-slate-900">
+                                  {(() => {
+                                    const row = vehicles.find(({ vehicle: veh }) => veh.id === vehiclePick);
+                                    if (!row) return vehiclePick;
+                                    const v = row.vehicle;
+                                    const name = v.display_name ?? 'Unnamed vehicle';
+                                    const plate = v.external_ref ?? v.id;
+                                    return `${name} — ${plate}`;
+                                  })()}
+                                </span>
+                              </p>
+                            ) : null}
                           </div>
                           <Button type="button" onClick={() => void onBind()}>
-                            Bind to operator
+                            Bind to rider/driver
                           </Button>
                         </div>
                       </TabsContent>
@@ -349,7 +444,7 @@ export default function OperatorDetailsPage({ params }: { params: Promise<{ id: 
           </div>
         ) : (
           <div className="py-12 text-center">
-            <h2 className="text-2xl font-bold text-slate-900">Operator not found</h2>
+            <h2 className="text-2xl font-bold text-slate-900">Rider/Driver not found</h2>
             <p className="text-muted-foreground mt-2">Check the ID or your permissions.</p>
             <Link href="/portal/operators" className="mt-4 inline-block">
               <Button>Back to directory</Button>

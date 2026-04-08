@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
 import time
 from typing import Any
@@ -21,6 +23,34 @@ ALGORITHM_HS256 = "HS256"
 def generate_oauth_state() -> str:
     """Return a high-entropy opaque `state` value for the authorize redirect."""
     return secrets.token_urlsafe(32)
+
+
+def driver_default_password(phone: str) -> str:
+    """Return the last 6 digits of a phone number as the driver's initial password."""
+    digits = "".join(c for c in phone if c.isdigit())
+    return digits[-6:] if len(digits) >= 6 else digits
+
+
+def hash_password(password: str) -> str:
+    """PBKDF2-SHA256 hash for local staff authentication."""
+    salt = secrets.token_hex(16)
+    iterations = 200_000
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${dk.hex()}"
+
+
+def verify_password(password: str, hashed: str | None) -> bool:
+    if not hashed:
+        return False
+    try:
+        algo, raw_iter, salt, digest = hashed.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        iterations = int(raw_iter)
+    except Exception:  # noqa: BLE001
+        return False
+    calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations)
+    return hmac.compare_digest(calc.hex(), digest)
 
 
 def sign_oauth_state_cookie(
@@ -82,6 +112,26 @@ def create_operator_access_token(
     payload: dict[str, Any] = {
         "sub": str(operator_id),
         "typ": "operator_access",
+        "role": role,
+        "iat": now,
+        "exp": now + ttl_sec,
+    }
+    token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM_HS256)
+    return token, ttl_sec
+
+
+def create_operator_refresh_token(
+    operator_id: UUID,
+    settings: Settings,
+    *,
+    role: str,
+) -> tuple[str, int]:
+    """Mint a long-lived refresh token for local app sessions."""
+    now = int(time.time())
+    ttl_sec = settings.refresh_token_expire_days * 24 * 60 * 60
+    payload: dict[str, Any] = {
+        "sub": str(operator_id),
+        "typ": "operator_refresh",
         "role": role,
         "iat": now,
         "exp": now + ttl_sec,

@@ -1,12 +1,15 @@
-"""Outbound integration with Inji Certify (issuance only; no wallet / verify here)."""
+"""Outbound integration with Inji Certify (OpenID4VCI credential issuance)."""
 
 from __future__ import annotations
 
 import logging
+import secrets
+import time
 from datetime import datetime
 from typing import Any
 
 import httpx
+import jwt
 
 from app.core.config import Settings
 from app.db.models.operator import Operator
@@ -15,6 +18,9 @@ from app.db.models.vehicle import Vehicle
 
 logger = logging.getLogger(__name__)
 
+CERTIFY_CREDENTIAL_ENDPOINT = "/v1/certify/issuance/credential"
+SAFERIDE_DRIVER_CREDENTIAL_TYPE = "SafeRideDriverCredential"
+
 
 class InjiCertifyConfigError(RuntimeError):
     """Raised when Inji is enabled but required settings are missing."""
@@ -22,11 +28,13 @@ class InjiCertifyConfigError(RuntimeError):
 
 class InjiCertifyService:
     """
-    Builds issuance payloads and POSTs to Inji Certify.
+    Builds OpenID4VCI issuance requests and POSTs to Inji Certify.
 
-    TODO: Replace placeholder paths, headers, and JSON shapes with the contract
-    from your Inji Certify deployment (OpenAPI / partner docs). Mapping is
-    intentionally isolated here so routes and credential_service stay stable.
+    Flow:
+      1. Build a proof JWT (openid4vci-proof+jwt) signed with SafeRide's RSA key.
+      2. POST to /v1/certify/issuance/credential with format=ldp_vc + proof.
+      3. The eSignet access_token from the driver's login is used as Bearer so
+         Certify can look up the driver's identity via the mock data provider.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -37,61 +45,82 @@ class InjiCertifyService:
             raise InjiCertifyConfigError("Inji Certify is disabled (INJI_CERTIFY_ENABLE=false)")
         if not self._s.inji_certify_base_url.strip():
             raise InjiCertifyConfigError("INJI_CERTIFY_BASE_URL is not set")
-        if not self._s.inji_certify_issuer_id.strip():
-            raise InjiCertifyConfigError("INJI_CERTIFY_ISSUER_ID is not set")
 
     def _url(self, path: str) -> str:
         base = self._s.inji_certify_base_url.rstrip("/")
         p = path if path.startswith("/") else f"/{path}"
         return f"{base}{p}"
 
-    def _headers(self) -> dict[str, str]:
+    def _credential_endpoint_url(self) -> str:
+        return self._url(CERTIFY_CREDENTIAL_ENDPOINT)
+
+    def _build_proof_jwt(self, operator: Operator, nonce: str | None = None) -> str:
+        """
+        Build an OpenID4VCI proof JWT (openid4vci-proof+jwt) signed with
+        SafeRide's RSA private key.  The `sub` is set to the operator's
+        individual_id (MOSIP VID/UIN) so Certify's data provider can look up
+        the identity in the mock registry.
+        """
+        path = self._s.esignet_private_key_path
+        if path is None or not path.is_file():
+            raise InjiCertifyConfigError(
+                "ESIGNET_PRIVATE_KEY_PATH must point to a readable RSA private key "
+                "to build the OpenID4VCI proof JWT"
+            )
+        with path.open(encoding="utf-8") as fh:
+            private_pem = fh.read()
+
+        now = int(time.time())
+        payload: dict[str, Any] = {
+            "iss": self._s.esignet_client_id or "saferide-client",
+            "aud": self._credential_endpoint_url(),
+            "iat": now,
+            "exp": now + 300,
+            "nonce": nonce or secrets.token_urlsafe(16),
+        }
+        # Include sub so Certify's data provider can resolve the identity
+        subject = operator.individual_id or operator.external_subject_id
+        if subject:
+            payload["sub"] = subject
+
+        headers: dict[str, str] = {"typ": "openid4vci-proof+jwt"}
+        kid = self._s.esignet_private_key_kid.strip()
+        if kid:
+            headers["kid"] = kid
+
+        alg = self._s.esignet_client_assertion_alg or "RS256"
+        return jwt.encode(payload, private_pem, algorithm=alg, headers=headers)
+
+    def _headers(self, access_token: str | None = None) -> dict[str, str]:
         h: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
-        key = self._s.inji_certify_api_key.strip()
-        if key:
-            # TODO: Switch to X-API-Key or mTLS if your Inji deployment requires it.
-            h["Authorization"] = f"Bearer {key}"
+        # Prefer the driver's eSignet access_token (required for Certify's
+        # JWKS-based Bearer validation).  Fall back to a configured API key.
+        bearer = access_token or self._s.inji_certify_api_key.strip()
+        if bearer:
+            h["Authorization"] = f"Bearer {bearer}"
         return h
 
-    async def _post_issue(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self._require_config()
-        url = self._url(path)
-        logger.debug("inji_certify POST %s", url)
-        async with httpx.AsyncClient(timeout=self._s.inji_certify_timeout) as client:
-            response = await client.post(url, json=payload, headers=self._headers())
-        if response.status_code >= 400:
-            body = response.text[:2000]
-            logger.error("inji_certify error %s: %s", response.status_code, body)
-            response.raise_for_status()
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise ValueError("Inji Certify response was not JSON") from exc
-        if not isinstance(data, dict):
-            raise ValueError("Inji Certify JSON response must be an object")
-        return data
-
-    def _build_operator_payload(self, operator: Operator) -> dict[str, Any]:
+    def _build_operator_payload(
+        self, operator: Operator, proof_jwt: str
+    ) -> dict[str, Any]:
         """
-        Map Operator → Inji issuance body.
+        OpenID4VCI credential request body (format=ldp_vc).
 
-        TODO: Align field names with your VC template (claims, credentialSubject, etc.).
+        credential_definition.type references the SafeRide driver credential
+        type that must be registered in Certify via POST /credential-configurations.
         """
-        verified_at: str | None = None
-        if operator.esignet_verified_at:
-            verified_at = operator.esignet_verified_at.isoformat()
         return {
-            "issuerId": self._s.inji_certify_issuer_id,
-            "template": self._s.inji_certify_operator_credential_template,
-            "subject": {
-                "operatorId": str(operator.id),
-                "externalSubjectId": operator.external_subject_id,
-                "fullName": operator.full_name,
-                "phone": operator.phone,
-                "acr": operator.acr,
-                "status": operator.status,
-                "esignetVerifiedAt": verified_at,
-                "authProvider": operator.auth_provider,
+            "format": "ldp_vc",
+            "credential_definition": {
+                "@context": [
+                    "https://www.w3.org/2018/credentials/v1",
+                    "https://mosip.github.io/inji-config/vc-local-ed25519/context.json",
+                ],
+                "type": ["VerifiableCredential", SAFERIDE_DRIVER_CREDENTIAL_TYPE],
+            },
+            "proof": {
+                "proof_type": "jwt",
+                "jwt": proof_jwt,
             },
         }
 
@@ -100,43 +129,68 @@ class InjiCertifyService:
         operator: Operator,
         vehicle: Vehicle,
         binding: OperatorVehicleBinding,
+        proof_jwt: str,
     ) -> dict[str, Any]:
-        """TODO: Align with Inji template for fleet / binding credentials."""
+        """OpenID4VCI credential request for a driver–vehicle binding."""
         return {
-            "issuerId": self._s.inji_certify_issuer_id,
-            "template": self._s.inji_certify_vehicle_credential_template,
-            "subject": {
-                "operatorId": str(operator.id),
-                "vehicleId": str(vehicle.id),
-                "bindingId": str(binding.id),
-                "externalSubjectId": operator.external_subject_id,
-                "vehicleExternalRef": vehicle.external_ref,
-                "vehicleDisplayName": vehicle.display_name,
-                "bindingValidFrom": binding.valid_from.isoformat() if binding.valid_from else None,
-                "bindingValidUntil": binding.valid_until.isoformat() if binding.valid_until else None,
+            "format": "ldp_vc",
+            "credential_definition": {
+                "@context": ["https://www.w3.org/2018/credentials/v1"],
+                "type": ["VerifiableCredential", "SafeRideVehicleBindingCredential"],
+            },
+            "proof": {
+                "proof_type": "jwt",
+                "jwt": proof_jwt,
             },
         }
 
-    async def issue_operator_credential(self, operator: Operator) -> dict[str, Any]:
-        payload = self._build_operator_payload(operator)
-        return await self._post_issue(self._s.inji_certify_operator_issue_path, payload)
+    async def _post_issue(
+        self, payload: dict[str, Any], access_token: str | None = None
+    ) -> dict[str, Any]:
+        self._require_config()
+        url = self._credential_endpoint_url()
+        logger.info("inji_certify: POST %s has_bearer=%s", url, bool(access_token))
+        async with httpx.AsyncClient(timeout=self._s.inji_certify_timeout) as client:
+            response = await client.post(
+                url, json=payload, headers=self._headers(access_token)
+            )
+        logger.info("inji_certify: response status=%s url=%s", response.status_code, url)
+        if response.status_code >= 400:
+            body = response.text[:2000]
+            logger.error("inji_certify: error %s body=%s", response.status_code, body)
+            response.raise_for_status()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            logger.error("inji_certify: non-JSON response url=%s body=%s", url, response.text[:500])
+            raise ValueError("Inji Certify response was not JSON") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Inji Certify JSON response must be an object")
+        logger.info("inji_certify: success keys=%s", sorted(data.keys()))
+        return data
+
+    async def issue_operator_credential(
+        self, operator: Operator, *, access_token: str | None = None
+    ) -> dict[str, Any]:
+        proof_jwt = self._build_proof_jwt(operator)
+        payload = self._build_operator_payload(operator, proof_jwt)
+        return await self._post_issue(payload, access_token)
 
     async def issue_vehicle_binding_credential(
         self,
         operator: Operator,
         vehicle: Vehicle,
         binding: OperatorVehicleBinding,
+        *,
+        access_token: str | None = None,
     ) -> dict[str, Any]:
-        payload = self._build_vehicle_payload(operator, vehicle, binding)
-        return await self._post_issue(self._s.inji_certify_vehicle_issue_path, payload)
+        proof_jwt = self._build_proof_jwt(operator)
+        payload = self._build_vehicle_payload(operator, vehicle, binding, proof_jwt)
+        return await self._post_issue(payload, access_token)
 
     @staticmethod
     def normalize_issue_response(raw: dict[str, Any]) -> dict[str, Any]:
-        """
-        Extract a stable subset for persistence.
-
-        TODO: Map real Inji fields (credentialId, vcJwt, sd-jwt, offerId, etc.).
-        """
+        """Extract a stable subset for persistence from the Certify response."""
         ext = (
             raw.get("credential_id")
             or raw.get("credentialId")

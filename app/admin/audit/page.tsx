@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,24 +8,90 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Search, Filter, Download, Activity } from 'lucide-react';
+import { fetchOperatorsList, fetchVehicles } from '@/lib/api/governance';
+import { fetchSimSmsOutbox, fetchRideEvents } from '@/lib/api/public-trust';
+import { ApiError } from '@/lib/api/client';
+import { toast } from 'sonner';
 
-// Mock Audit Log Data
-const mockAuditLogs = [
-  { id: 'AL-1001', date: '2023-11-15T09:30:00Z', action: 'operator_enrolled', actor: 'Officer Jane Doe', target: 'OP-10234', details: 'New operator enrolled successfully.' },
-  { id: 'AL-1002', date: '2023-11-15T10:15:00Z', action: 'vehicle_bound', actor: 'Officer Jane Doe', target: 'UAB 123C', details: 'Vehicle bound to operator OP-10234.' },
-  { id: 'AL-1003', date: '2023-11-14T14:20:00Z', action: 'status_changed', actor: 'Admin System', target: 'OP-09876', details: 'Status changed from active to suspended due to incident report.' },
-  { id: 'AL-1004', date: '2023-11-14T16:45:00Z', action: 'incident_resolved', actor: 'Admin John Smith', target: 'INC-2023-001', details: 'Incident marked as resolved after investigation.' },
-  { id: 'AL-1005', date: '2023-11-13T08:00:00Z', action: 'login_failed', actor: 'Unknown IP', target: 'System', details: 'Multiple failed login attempts detected.' },
-  { id: 'AL-1006', date: '2023-11-12T11:10:00Z', action: 'operator_updated', actor: 'Officer Mark Lee', target: 'OP-11223', details: 'Updated operator contact information.' },
-];
+type AuditLog = {
+  id: string;
+  date: string;
+  action: string;
+  actor: string;
+  target: string;
+  details: string;
+};
 
 export default function AdminAuditLogPage() {
   const [searchTerm, setSearchTerm] = useState('');
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filteredLogs = mockAuditLogs.filter(log => 
-    log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.actor.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.target.toLowerCase().includes(searchTerm.toLowerCase())
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const [ops, vs, sms, rides] = await Promise.all([
+          fetchOperatorsList({ limit: 300 }),
+          fetchVehicles(),
+          fetchSimSmsOutbox(200),
+          fetchRideEvents(200),
+        ]);
+        const built: AuditLog[] = [
+          ...ops.slice(0, 80).map((r) => ({
+            id: `OP-${r.operator.id}`,
+            date: r.operator.updated_at,
+            action: 'operator_synced',
+            actor: 'system',
+            target: r.operator.verify_short_code ?? r.operator.id.slice(0, 8),
+            details: `${r.operator.full_name || 'Operator'} status=${r.operator.status}`,
+          })),
+          ...vs.slice(0, 80).map((item) => {
+            const v = item.vehicle;
+            return {
+              id: `VH-${v.id}`,
+              date: v.updated_at,
+              action: 'vehicle_synced',
+              actor: 'system',
+              target: v.external_ref || v.id.slice(0, 8),
+              details: v.display_name || v.make_model || 'Vehicle record updated',
+            };
+          }),
+          ...sms.slice(0, 80).map((m) => ({
+            id: `SMS-${m.id}`,
+            date: m.created_at,
+            action: `sms_${m.tag}`,
+            actor: 'simulator',
+            target: m.to,
+            details: m.body.slice(0, 140),
+          })),
+          ...rides.map((e) => ({
+            id: `RIDE-${e.id}`,
+            date: e.recorded_at,
+            action: e.event_type,
+            actor: e.channel.toLowerCase(),
+            target: e.verify_short_code,
+            details: e.passenger_msisdn ? `msisdn=${e.passenger_msisdn}` : 'anonymous scan',
+          })),
+        ].sort((a, b) => +new Date(b.date) - +new Date(a.date));
+        setLogs(built);
+      } catch (e) {
+        toast.error(e instanceof ApiError ? e.message : 'Failed to load audit feed');
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+  }, []);
+
+  const filteredLogs = useMemo(
+    () =>
+      logs.filter((log) =>
+        `${log.action} ${log.actor} ${log.target} ${log.details}`
+          .toLowerCase()
+          .includes(searchTerm.toLowerCase()),
+      ),
+    [logs, searchTerm],
   );
 
   const renderActionBadge = (action: string) => {
@@ -96,7 +162,13 @@ export default function AdminAuditLogPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredLogs.length > 0 ? (
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredLogs.length > 0 ? (
                     filteredLogs.map((log) => (
                       <TableRow key={log.id} className="hover:bg-slate-50/50 transition-colors">
                         <TableCell className="text-sm text-slate-600 whitespace-nowrap">
@@ -122,7 +194,7 @@ export default function AdminAuditLogPage() {
             </div>
             
             <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
-              <div>Showing {filteredLogs.length} of {mockAuditLogs.length} logs</div>
+              <div>Showing {filteredLogs.length} of {logs.length} logs</div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" disabled>Previous</Button>
                 <Button variant="outline" size="sm" disabled>Next</Button>

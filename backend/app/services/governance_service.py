@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class GovernanceError(Exception):
@@ -41,6 +41,11 @@ def set_operator_trust_status(session: Session, operator_id: UUID, new_status: s
     op = session.get(Operator, operator_id)
     if op is None:
         raise GovernanceError("Operator not found", status_code=404)
+    if op.role == "passenger" and ns in (STATUS_ACTIVE, STATUS_APPROVED) and op.esignet_verified_at is None:
+        raise GovernanceError(
+            "Passenger must complete eSignet verification before APPROVED/ACTIVE status",
+            status_code=400,
+        )
     op.status = ns
     op.updated_at = _utcnow()
     session.add(op)
@@ -59,9 +64,12 @@ def list_operators_with_vehicle_hint(
     status: str | None = None,
     q: str | None = None,
     limit: int = 200,
+    corporate_body_id: UUID | None = None,
 ) -> list[tuple[Operator, str | None]]:
     """Return operators with optional primary vehicle plate (first active binding)."""
     stmt = select(Operator).order_by(Operator.created_at.desc()).limit(min(limit, 500))
+    if corporate_body_id is not None:
+        stmt = stmt.where(Operator.corporate_body_id == corporate_body_id)
     if status:
         stmt = stmt.where(Operator.status == normalize_operator_status(status))
     rows = list(session.exec(stmt).all())

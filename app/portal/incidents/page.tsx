@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -8,24 +8,55 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Search, Filter, MoreHorizontal, AlertTriangle, ArrowLeft, FileText, Eye } from 'lucide-react';
-import { mockIncidents, mockOperators } from '@/lib/mock-data';
+import { ApiError } from '@/lib/api/client';
+import { fetchOperatorsList } from '@/lib/api/governance';
+import { fetchPublicReports, type PublicIncidentRow } from '@/lib/api/public-trust';
+import type { OperatorListItem } from '@/lib/api/types';
+import { toast } from 'sonner';
 
 export default function PortalIncidentsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [severityFilter, setSeverityFilter] = useState('all');
+  const [rows, setRows] = useState<PublicIncidentRow[]>([]);
+  const [operators, setOperators] = useState<OperatorListItem[]>([]);
 
-  const filteredIncidents = mockIncidents.filter(incident => {
-    const matchesSearch = incident.operatorCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          incident.type.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesSeverity = severityFilter === 'all' || incident.severity === severityFilter;
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [inc, ops] = await Promise.all([
+          fetchPublicReports(500),
+          fetchOperatorsList({ limit: 500 }),
+        ]);
+        setRows(inc);
+        setOperators(ops);
+      } catch (e) {
+        toast.error(e instanceof ApiError ? `${e.status}: ${e.message}` : 'Failed to load incidents');
+      }
+    })();
+  }, []);
+
+  const filteredIncidents = useMemo(() => rows.filter((incident) => {
+    const src = `${incident.operator_code || ''} ${incident.incident_type}`.toLowerCase();
+    const matchesSearch = src.includes(searchTerm.toLowerCase());
+    const sev = incident.incident_type.toLowerCase().includes('panic')
+      ? 'high'
+      : incident.incident_type.toLowerCase().includes('abuse')
+        ? 'medium'
+        : 'low';
+    const matchesSeverity = severityFilter === 'all' || sev === severityFilter;
     return matchesSearch && matchesSeverity;
-  });
+  }), [rows, searchTerm, severityFilter]);
 
   const getOperatorName = (code: string) => {
-    const op = mockOperators.find(o => o.code === code);
-    return op ? `${op.firstName} ${op.lastName}` : 'Unknown Operator';
+    const op = operators.find((o) => (o.operator.verify_short_code || '').toUpperCase() === (code || '').toUpperCase());
+    return op ? op.operator.full_name || 'Unknown Rider/Driver' : 'Unknown Rider/Driver';
+  };
+
+  const getOperatorId = (code: string) => {
+    const op = operators.find((o) => (o.operator.verify_short_code || '').toUpperCase() === (code || '').toUpperCase());
+    return op?.operator.id || null;
   };
 
   const renderSeverityBadge = (severity: string) => {
@@ -56,7 +87,7 @@ export default function PortalIncidentsPage() {
               <AlertTriangle className="h-8 w-8 text-amber-600" />
               Incident Reports
             </h1>
-            <p className="text-muted-foreground mt-1">Review and manage safety issues reported against your operators.</p>
+            <p className="text-muted-foreground mt-1">Review and manage safety issues reported against your riders/drivers.</p>
           </div>
         </div>
 
@@ -99,7 +130,7 @@ export default function PortalIncidentsPage() {
                   <TableRow>
                     <TableHead className="font-semibold text-slate-700">ID</TableHead>
                     <TableHead className="font-semibold text-slate-700">Date</TableHead>
-                    <TableHead className="font-semibold text-slate-700">Operator</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Rider / Driver</TableHead>
                     <TableHead className="font-semibold text-slate-700">Type</TableHead>
                     <TableHead className="font-semibold text-slate-700">Severity</TableHead>
                     <TableHead className="font-semibold text-slate-700">Status</TableHead>
@@ -108,23 +139,34 @@ export default function PortalIncidentsPage() {
                 </TableHeader>
                 <TableBody>
                   {filteredIncidents.length > 0 ? (
-                    filteredIncidents.map((incident) => (
+                    filteredIncidents.map((incident) => {
+                      const sev = incident.incident_type.toLowerCase().includes('panic')
+                        ? 'high'
+                        : incident.incident_type.toLowerCase().includes('abuse')
+                          ? 'medium'
+                          : 'low';
+                      const operatorId = getOperatorId(incident.operator_code || '');
+                      return (
                       <TableRow key={incident.id} className="hover:bg-slate-50/50 transition-colors">
-                        <TableCell className="font-mono font-medium text-indigo-950">{incident.id}</TableCell>
-                        <TableCell className="text-sm text-slate-600">{new Date(incident.date).toLocaleDateString()}</TableCell>
+                        <TableCell className="font-mono font-medium text-indigo-950">{incident.id.slice(0, 8)}</TableCell>
+                        <TableCell className="text-sm text-slate-600">{new Date(incident.created_at).toLocaleDateString()}</TableCell>
                         <TableCell>
                           <div className="flex flex-col">
-                            <Link href={`/portal/operators/${incident.operatorCode}`} className="font-medium text-indigo-600 hover:underline">
-                              {getOperatorName(incident.operatorCode)}
-                            </Link>
-                            <span className="text-xs text-muted-foreground font-mono">{incident.operatorCode}</span>
+                            {operatorId ? (
+                              <Link href={`/portal/operators/${operatorId}`} className="font-medium text-indigo-600 hover:underline">
+                                {getOperatorName(incident.operator_code || '')}
+                              </Link>
+                            ) : (
+                              <span className="font-medium text-slate-700">{getOperatorName(incident.operator_code || '')}</span>
+                            )}
+                            <span className="text-xs text-muted-foreground font-mono">{incident.operator_code || '—'}</span>
                           </div>
                         </TableCell>
-                        <TableCell className="capitalize text-slate-600">{incident.type.replace('-', ' ')}</TableCell>
-                        <TableCell>{renderSeverityBadge(incident.severity)}</TableCell>
+                        <TableCell className="capitalize text-slate-600">{incident.incident_type.replace('-', ' ')}</TableCell>
+                        <TableCell>{renderSeverityBadge(sev)}</TableCell>
                         <TableCell>
                           <Badge variant="outline" className="bg-slate-100 text-slate-700 border-slate-200 capitalize">
-                            {incident.status}
+                            {incident.status || 'open'}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
@@ -134,21 +176,23 @@ export default function PortalIncidentsPage() {
                               <MoreHorizontal className="h-4 w-4" />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                              <DropdownMenuItem>
-                                <Eye className="mr-2 h-4 w-4" /> View Details
-                              </DropdownMenuItem>
-                              <DropdownMenuItem>
-                                <FileText className="mr-2 h-4 w-4" /> Add Note
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem className="text-amber-600">Mark Under Review</DropdownMenuItem>
-                              <DropdownMenuItem className="text-red-600">Suspend Operator</DropdownMenuItem>
+                              <DropdownMenuGroup>
+                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                <DropdownMenuItem>
+                                  <Eye className="mr-2 h-4 w-4" /> View Details
+                                </DropdownMenuItem>
+                                <DropdownMenuItem>
+                                  <FileText className="mr-2 h-4 w-4" /> Add Note
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-amber-600">Mark Under Review</DropdownMenuItem>
+                                <DropdownMenuItem className="text-red-600">Suspend Rider/Driver</DropdownMenuItem>
+                              </DropdownMenuGroup>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
                       </TableRow>
-                    ))
+                    )})
                   ) : (
                     <TableRow>
                       <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
@@ -161,7 +205,7 @@ export default function PortalIncidentsPage() {
             </div>
             
             <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
-              <div>Showing {filteredIncidents.length} of {mockIncidents.length} incidents</div>
+              <div>Showing {filteredIncidents.length} of {rows.length} incidents</div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" disabled>Previous</Button>
                 <Button variant="outline" size="sm" disabled>Next</Button>

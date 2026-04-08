@@ -27,7 +27,7 @@ class BindingActiveUpdate(BaseModel):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @router.patch("/{binding_id}", response_model=OperatorVehicleBindingRead)

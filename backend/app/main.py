@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.bindings import router as bindings_router
+from app.api.corporate_bodies import router as corporate_bodies_router
 from app.api.credentials import router as credentials_router
 from app.api.health import router as health_router
 from app.api.operators import router as operators_router
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=settings.cors_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -46,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(public_trust_router)
     app.include_router(public_flows_router)
+    app.include_router(corporate_bodies_router)
     app.include_router(operators_router)
     app.include_router(vehicles_router)
     app.include_router(bindings_router)

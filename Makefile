@@ -22,7 +22,7 @@ install:
 	npm install
 
 backend:
-	cd backend && uv run uvicorn app.main:app \
+	cd backend && uv run python -m uvicorn app.main:app \
 		--host $(BACKEND_HOST) \
 		--port $(BACKEND_PORT) \
 		--reload \
@@ -36,7 +36,7 @@ frontend:
 # Run API and Next together; trap tears down background jobs on INT/TERM/EXIT.
 dev:
 	@trap 'kill $$(jobs -p) 2>/dev/null || true' INT TERM EXIT; \
-	(cd backend && uv run uvicorn app.main:app \
+	(cd backend && uv run python -m uvicorn app.main:app \
 		--host $(BACKEND_HOST) \
 		--port $(BACKEND_PORT) \
 		--reload \

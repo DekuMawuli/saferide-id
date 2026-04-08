@@ -7,14 +7,20 @@ export type OperatorRead = {
   id: string;
   external_subject_id: string;
   full_name: string | null;
+  email?: string | null;
   phone: string | null;
   photo_ref: string | null;
+  individual_id?: string | null;
+  gender?: string | null;
+  birthdate?: string | null;
+  registration_type?: string | null;
   auth_provider: string;
   acr: string | null;
   esignet_verified_at: string | null;
   status: string;
   verify_short_code?: string | null;
   role: string;
+  corporate_body_id?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -24,12 +30,41 @@ export type OperatorListItem = {
   primary_vehicle_plate: string | null;
 };
 
+export type CorporateBodyRead = {
+  id: string;
+  name: string;
+  code: string | null;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type VehicleRead = {
   id: string;
   external_ref: string | null;
   display_name: string | null;
+  vehicle_type?: string | null;
+  make_model?: string | null;
+  color?: string | null;
+  corporate_body_id?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type BoundOperatorSummary = {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  status: string;
+  verify_short_code: string | null;
+  binding_id: string;
+  is_active: boolean;
+};
+
+export type VehicleListItem = {
+  vehicle: VehicleRead;
+  bound_operator: BoundOperatorSummary | null;
+  corporate_body_name?: string | null;
 };
 
 export type OperatorVehicleBindingRead = {
@@ -47,6 +82,18 @@ export type OperatorVehicleBindingListItem = {
   binding: OperatorVehicleBindingRead;
   plate: string | null;
   vehicle_display_name: string | null;
+  vehicle_type?: string | null;
+  make_model?: string | null;
+  color?: string | null;
+  corporate_body_name?: string | null;
+  vehicle_updated_at?: string | null;
+};
+
+export type ESignetDebugRead = {
+  operator_id: string;
+  claims: Record<string, unknown>;
+  userinfo: Record<string, unknown> | string | null;
+  created_at: number;
 };
 
 export type TrustVehicleItem = {
@@ -86,10 +133,22 @@ export type AuthMeResponse = {
   note: string | null;
 };
 
+export type AuthStartResponse = {
+  authorization_url: string;
+  state: string;
+  expires_in: number;
+};
+
 export type EsignetCallbackResponse = {
   message?: string;
   operator: OperatorRead;
   access_token: string;
+  refresh_token?: string | null;
   token_type: string;
   expires_in: number;
+  refresh_expires_in?: number | null;
+  role?: string;
+  auth_provider?: string;
+  id_token_verified?: boolean;
+  redirect_to?: string;
 };

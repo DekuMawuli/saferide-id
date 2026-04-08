@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from app.core.trust_status import normalize_operator_status, trust_band_for_status
 from app.db.models.operator import Operator
 from app.db.models.operator_vehicle_binding import OperatorVehicleBinding
+from app.db.models.ride_event import RideEvent
 from app.db.models.vehicle import Vehicle
 from app.schemas.disclosure import TrustPublicResponse, TrustVehicleItem
 from app.services.consent_service import validate_disclosure_token
@@ -122,6 +123,8 @@ def get_trust_public(
     *,
     tier: str = "standard",
     disclosure_token: str | None = None,
+    channel: str = "WEB",
+    passenger_msisdn: str | None = None,
 ) -> TrustPublicResponse | None:
     op = get_operator_by_verify_short_code(session, code)
     if op is None:
@@ -132,4 +135,16 @@ def get_trust_public(
             session, op.id, disclosure_token.strip()
         ):
             return None
+    # Record a ride event for every successful standard/extended trust lookup
+    if tier_norm in ("standard", "extended"):
+        session.add(
+            RideEvent(
+                operator_id=op.id,
+                verify_short_code=(code or "").strip().upper(),
+                channel=channel,
+                passenger_msisdn=passenger_msisdn,
+                event_type="trust_verified",
+            )
+        )
+        session.commit()
     return build_trust_response(session, op, tier=tier_norm)

@@ -1,7 +1,8 @@
 'use client';
 
-import { use, useCallback, useEffect, useRef, useState } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Navbar } from '@/components/shared/navbar';
 import { Footer } from '@/components/shared/footer';
 import { Button } from '@/components/ui/button';
@@ -31,63 +32,61 @@ import { isApiConfigured } from '@/lib/api/config';
 import {
   createConsentRequest,
   fetchTrustByCode,
+  fetchVcProof,
   pollConsentStatus,
   postEmergencyShare,
 } from '@/lib/api/public-trust';
+import type { VcProofSummary } from '@/lib/api/public-trust';
 import type { TrustPublicResponse } from '@/lib/api/types';
 
 export default function VerificationResultPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const code = resolvedParams.id;
-  const [loading, setLoading] = useState(true);
+  const searchParams = useSearchParams();
+  const initialDisclosureToken = searchParams.get('disclosure_token')?.trim() || null;
+  const [loading, setLoading] = useState(() => isApiConfigured());
   const [trust, setTrust] = useState<TrustPublicResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const [viewTier, setViewTier] = useState<'standard' | 'minimal'>('standard');
-  const [disclosureToken, setDisclosureToken] = useState<string | null>(null);
+  const [disclosureToken, setDisclosureToken] = useState<string | null>(initialDisclosureToken);
   const [consentPolling, setConsentPolling] = useState(false);
   const [consentRequestId, setConsentRequestId] = useState<string | null>(null);
   const [consentError, setConsentError] = useState<string | null>(null);
   const [panicMsisdn, setPanicMsisdn] = useState('');
   const [panicDone, setPanicDone] = useState<string | null>(null);
+  const [vcProof, setVcProof] = useState<VcProofSummary | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const loadTrust = useCallback(async () => {
-    if (!isApiConfigured()) {
-      setLoading(false);
-      setNotFound(true);
-      return;
-    }
-    setLoading(true);
-    setForbidden(false);
-    try {
-      const tier = disclosureToken ? 'extended' : viewTier === 'minimal' ? 'minimal' : 'standard';
-      const row = await fetchTrustByCode(code, {
-        tier,
-        disclosureToken: disclosureToken ?? undefined,
-      });
-      setTrust(row);
-      setNotFound(false);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 403) {
-        setTrust(null);
-        setForbidden(true);
+  // Reload trust data when code, tier, or disclosure token changes
+  useEffect(() => {
+    let cancelled = false;
+    if (!isApiConfigured()) return;
+    const tier = disclosureToken ? 'extended' : viewTier === 'minimal' ? 'minimal' : 'standard';
+    fetchTrustByCode(code, { tier, disclosureToken: disclosureToken ?? undefined })
+      .then((row) => {
+        if (cancelled) return;
+        setTrust(row);
         setNotFound(false);
-      } else if (e instanceof ApiError && e.status === 404) {
-        setTrust(null);
-        setNotFound(true);
-      } else {
-        setTrust(null);
-        setNotFound(true);
-      }
-    } finally {
-      setLoading(false);
-    }
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        if (e instanceof ApiError && e.status === 403) {
+          setTrust(null); setForbidden(true); setNotFound(false);
+        } else {
+          setTrust(null); setNotFound(true);
+        }
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [code, disclosureToken, viewTier]);
 
+  // Fetch VC proof once per code
   useEffect(() => {
-    void loadTrust();
-  }, [loadTrust]);
+    if (!isApiConfigured()) return;
+    fetchVcProof(code).then(setVcProof).catch(() => setVcProof(null));
+  }, [code]);
 
   useEffect(() => {
     return () => {
@@ -105,6 +104,8 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
           setConsentPolling(false);
+          setLoading(true);
+          setForbidden(false);
           setDisclosureToken(st.disclosure_token as string);
           setConsentRequestId(null);
         }
@@ -235,6 +236,8 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
             size="sm"
             variant={viewTier === 'standard' ? 'default' : 'outline'}
             onClick={() => {
+              setLoading(true);
+              setForbidden(false);
               setDisclosureToken(null);
               setViewTier('standard');
             }}
@@ -247,6 +250,8 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
             size="sm"
             variant={viewTier === 'minimal' ? 'default' : 'outline'}
             onClick={() => {
+              setLoading(true);
+              setForbidden(false);
               setDisclosureToken(null);
               setViewTier('minimal');
             }}
@@ -388,6 +393,24 @@ export default function VerificationResultPage({ params }: { params: Promise<{ i
                     </div>
                   ) : null}
                 </div>
+
+                {vcProof !== null && (
+                  <div className={`flex items-start gap-3 rounded-lg border p-3 ${vcProof.vc_issued ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
+                    <ShieldCheck className={`mt-0.5 h-5 w-5 shrink-0 ${vcProof.vc_issued ? 'text-emerald-600' : 'text-slate-400'}`} />
+                    <div className="min-w-0">
+                      <p className={`text-sm font-semibold ${vcProof.vc_issued ? 'text-emerald-800' : 'text-slate-600'}`}>
+                        {vcProof.vc_issued ? 'Cryptographic credential issued' : 'No verifiable credential on file'}
+                      </p>
+                      {vcProof.vc_issued && (
+                        <div className="mt-1 space-y-0.5 text-xs text-emerald-700">
+                          <p>Issuer: <span className="font-mono">{vcProof.issuer}</span></p>
+                          <p>Type: <span className="font-mono">{vcProof.template_name ?? vcProof.credential_type}</span></p>
+                          {vcProof.issued_at && <p>Issued: {new Date(vcProof.issued_at).toLocaleString()}</p>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <Card className="border-indigo-100 bg-indigo-50/50">
                   <CardHeader className="py-3">

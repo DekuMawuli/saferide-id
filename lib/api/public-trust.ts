@@ -50,6 +50,22 @@ export async function postPublicReport(body: {
   return apiFetchPublicRequest('/public/report', { method: 'POST', json: body });
 }
 
+export type PublicIncidentRow = {
+  id: string;
+  operator_code: string | null;
+  incident_type: string;
+  details: string;
+  location: string | null;
+  contact: string | null;
+  created_at: string;
+  status: string;
+};
+
+export async function fetchPublicReports(limit = 100): Promise<PublicIncidentRow[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  return apiFetchPublic<PublicIncidentRow[]>(`/public/reports?${qs}`);
+}
+
 export type UssdSimResponse = {
   session_id: string;
   continue_session: boolean;
@@ -87,4 +103,35 @@ export async function postSimSms(body: {
     method: 'POST',
     json: { to_address: body.to_address, body: body.body, tag: body.tag ?? 'manual' },
   });
+}
+
+export type VcProofSummary =
+  | { vc_issued: false }
+  | {
+      vc_issued: true;
+      credential_type: string;
+      template_name: string | null;
+      issuer: string;
+      status: string;
+      issued_at: string | null;
+      expires_at: string | null;
+    };
+
+export async function fetchVcProof(code: string): Promise<VcProofSummary> {
+  return apiFetchPublic<VcProofSummary>(`/public/trust/${encodeURIComponent(code)}/vc-proof`);
+}
+
+export type RideEventRow = {
+  id: string;
+  operator_id: string;
+  verify_short_code: string;
+  channel: string;
+  passenger_msisdn: string | null;
+  event_type: string;
+  consent_request_id: string | null;
+  recorded_at: string;
+};
+
+export async function fetchRideEvents(limit = 200): Promise<RideEventRow[]> {
+  return apiFetchPublic<RideEventRow[]>(`/public/ride-events?limit=${limit}`);
 }

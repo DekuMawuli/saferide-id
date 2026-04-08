@@ -7,6 +7,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlmodel import select
 from sqlmodel import Session
 
 from app.core.config import Settings, get_settings
@@ -22,6 +23,7 @@ from app.schemas.public_emergency import (
     SimSmsSendBody,
     UssdSimTurnBody,
 )
+from app.db.models.ride_event import RideEvent
 from app.services.consent_service import create_consent_request, poll_consent_request
 from app.services.emergency_service import create_emergency_share, format_share_public
 from app.services.sms_simulator_service import list_sim_sms, log_sim_sms
@@ -114,6 +116,32 @@ def public_submit_report(
     return {"report_id": str(row.id), "ok": True}
 
 
+@router.get("/reports")
+def public_list_reports(
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 100,
+) -> list[dict]:
+    stmt = (
+        select(PublicIncidentReport)
+        .order_by(PublicIncidentReport.created_at.desc())
+        .limit(min(limit, 500))
+    )
+    rows = list(session.exec(stmt).all())
+    return [
+        {
+            "id": str(r.id),
+            "operator_code": r.operator_code,
+            "incident_type": r.incident_type,
+            "details": r.details,
+            "location": r.location,
+            "contact": r.contact,
+            "created_at": r.created_at.isoformat(),
+            "status": "open",
+        }
+        for r in rows
+    ]
+
+
 @router.post("/simulate/ussd")
 def public_simulate_ussd(
     body: UssdSimTurnBody,
@@ -150,6 +178,32 @@ def public_simulate_sms_list(
             "body": r.body,
             "tag": r.tag,
             "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/ride-events")
+def public_list_ride_events(
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 200,
+) -> list[dict]:
+    stmt = (
+        select(RideEvent)
+        .order_by(RideEvent.recorded_at.desc())
+        .limit(min(limit, 1000))
+    )
+    rows = list(session.exec(stmt).all())
+    return [
+        {
+            "id": str(r.id),
+            "operator_id": str(r.operator_id),
+            "verify_short_code": r.verify_short_code,
+            "channel": r.channel,
+            "passenger_msisdn": r.passenger_msisdn,
+            "event_type": r.event_type,
+            "consent_request_id": str(r.consent_request_id) if r.consent_request_id else None,
+            "recorded_at": r.recorded_at.isoformat(),
         }
         for r in rows
     ]

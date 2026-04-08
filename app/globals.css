@@ -126,3 +126,45 @@
     @apply font-sans;
     }
 }
+
+/* QR verify: laser-style sweep over camera preview */
+@keyframes saferide-qr-scan-y {
+  0%,
+  100% {
+    top: 0;
+  }
+  50% {
+    top: calc(100% - 3px);
+  }
+}
+
+.qr-scanner-sweep {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 3px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(52 211 153 / 0.15) 15%,
+    rgb(52 211 153) 35%,
+    rgb(167 243 208) 50%,
+    rgb(52 211 153) 65%,
+    rgb(52 211 153 / 0.15) 85%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 10px rgb(52 211 153),
+    0 0 22px rgb(16 185 129 / 0.55),
+    0 0 36px rgb(16 185 129 / 0.2);
+  animation: saferide-qr-scan-y 2.35s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-scanner-sweep {
+    animation: none;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+}

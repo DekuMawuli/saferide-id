@@ -1,17 +1,27 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
+import { useOperatorSession } from '@/hooks/use-operator-session';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Menu, ShieldCheck, Users, Car, AlertTriangle, Settings, LayoutDashboard, BadgeIcon as IdCard, User, LogOut, FileText } from 'lucide-react';
 
+/** Dashboard roots must match exactly; otherwise `/portal/foo` would always highlight `/portal`. */
+function isNavActive(pathname: string, href: string): boolean {
+  if (pathname === href) return true;
+  if (href === '/portal' || href === '/admin') return false;
+  return pathname.startsWith(`${href}/`);
+}
+
 const navLinks = {
   admin: [
     { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/admin/corporate-bodies', label: 'Corporate Bodies', icon: Settings },
+    { href: '/admin/platform-admins', label: 'Platform Admins', icon: Settings },
     { href: '/admin/operators', label: 'Operators', icon: Users },
+    { href: '/admin/riders', label: 'Riders', icon: User },
     { href: '/admin/vehicles', label: 'Vehicles', icon: Car },
     { href: '/admin/incidents', label: 'Incidents', icon: AlertTriangle },
     { href: '/admin/audit', label: 'Audit Log', icon: FileText },
@@ -19,7 +29,8 @@ const navLinks = {
   ],
   portal: [
     { href: '/portal', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/portal/operators', label: 'Operators', icon: Users },
+    { href: '/portal/operators', label: 'Riders', icon: Users },
+    { href: '/portal/corporate-officers', label: 'Corporate Officers', icon: Settings },
     { href: '/portal/vehicles', label: 'Vehicles', icon: Car },
     { href: '/portal/badges', label: 'Badges', icon: IdCard },
     { href: '/portal/incidents', label: 'Incidents', icon: AlertTriangle },
@@ -28,11 +39,15 @@ const navLinks = {
     { href: '/driver/profile', label: 'My Profile', icon: User },
     { href: '/driver/vehicle', label: 'My Vehicle', icon: Car },
     { href: '/driver/status', label: 'Status & Compliance', icon: ShieldCheck },
-  ]
+  ],
+  rider: [
+    { href: '/rider/status', label: 'My Status', icon: ShieldCheck },
+  ],
 };
 
-export function SidebarLayout({ children, role }: { children: React.ReactNode, role: 'admin' | 'portal' | 'driver' }) {
+export function SidebarLayout({ children, role, badgeCounts = {} }: { children: React.ReactNode, role: 'admin' | 'portal' | 'driver' | 'rider', badgeCounts?: Record<string, number> }) {
   const pathname = usePathname();
+  const { signOut } = useOperatorSession();
   const links = navLinks[role];
 
   return (
@@ -45,12 +60,13 @@ export function SidebarLayout({ children, role }: { children: React.ReactNode, r
         </div>
         <div className="px-4 py-2 flex-1">
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4 px-3">
-            {role === 'admin' ? 'Administration' : role === 'portal' ? 'Officer Portal' : 'Driver Portal'}
+            {role === 'admin' ? 'Administration' : role === 'portal' ? 'Officer Portal' : role === 'driver' ? 'Driver Portal' : 'Rider Portal'}
           </div>
           <div className="space-y-1">
             {links.map((link) => {
-              const isActive = pathname === link.href || pathname.startsWith(`${link.href}/`);
+              const isActive = isNavActive(pathname, link.href);
               const Icon = link.icon;
+              const count = badgeCounts[link.href] ?? 0;
               return (
                 <Link key={link.href} href={link.href}>
                   <span className={cn(
@@ -58,7 +74,12 @@ export function SidebarLayout({ children, role }: { children: React.ReactNode, r
                     isActive ? "bg-indigo-50 text-indigo-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                   )}>
                     <Icon className={cn("h-4 w-4", isActive ? "text-indigo-700" : "text-slate-500")} />
-                    {link.label}
+                    <span className="flex-1">{link.label}</span>
+                    {count > 0 && (
+                      <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">
+                        {count}
+                      </span>
+                    )}
                   </span>
                 </Link>
               );
@@ -66,12 +87,10 @@ export function SidebarLayout({ children, role }: { children: React.ReactNode, r
           </div>
         </div>
         <div className="p-4 border-t border-slate-200">
-          <Link href="/login">
-            <Button variant="ghost" className="w-full justify-start text-slate-600 hover:text-slate-900 hover:bg-slate-100">
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign Out
-            </Button>
-          </Link>
+          <Button variant="ghost" className="w-full justify-start text-slate-600 hover:text-slate-900 hover:bg-slate-100" onClick={() => signOut()}>
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign Out
+          </Button>
         </div>
       </aside>
 
@@ -94,8 +113,9 @@ export function SidebarLayout({ children, role }: { children: React.ReactNode, r
               <div className="p-4 flex-1">
                 <div className="space-y-1">
                   {links.map((link) => {
-                    const isActive = pathname === link.href || pathname.startsWith(`${link.href}/`);
+                    const isActive = isNavActive(pathname, link.href);
                     const Icon = link.icon;
+                    const count = badgeCounts[link.href] ?? 0;
                     return (
                       <Link key={link.href} href={link.href}>
                         <span className={cn(
@@ -103,7 +123,12 @@ export function SidebarLayout({ children, role }: { children: React.ReactNode, r
                           isActive ? "bg-indigo-50 text-indigo-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                         )}>
                           <Icon className={cn("h-4 w-4", isActive ? "text-indigo-700" : "text-slate-500")} />
-                          {link.label}
+                          <span className="flex-1">{link.label}</span>
+                          {count > 0 && (
+                            <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">
+                              {count}
+                            </span>
+                          )}
                         </span>
                       </Link>
                     );

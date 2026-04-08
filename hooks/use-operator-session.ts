@@ -17,16 +17,16 @@ type State = {
 };
 
 export function useOperatorSession() {
+  // Always start loading=true so the redirect gate in RoleGate never fires prematurely.
+  // On SSR, window is undefined and getAccessToken() returns null — if we used that as
+  // the initial value we'd get loading=false/hasToken=false on the first render, which
+  // causes RoleGate's redirect effect to fire before refresh() has read localStorage.
   const [state, setState] = useState<State>({
     me: null,
-    loading: false,
+    loading: true,
     error: null,
   });
   const [hasToken, setHasToken] = useState(false);
-
-  useEffect(() => {
-    setHasToken(Boolean(getAccessToken()));
-  }, []);
 
   const refresh = useCallback(async () => {
     if (!isApiConfigured()) {
@@ -65,6 +65,16 @@ export function useOperatorSession() {
     return () => window.removeEventListener('saferide-token-updated', onToken);
   }, [refresh]);
 
+  // Re-check session when browser restores page from bfcache (back/forward navigation).
+  // Without this, the page stays stuck in `loading: true` because React doesn't remount.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) void refresh();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, [refresh]);
+
   const saveToken = useCallback(
     (token: string | null) => {
       setAccessToken(token);
@@ -74,10 +84,11 @@ export function useOperatorSession() {
     [refresh],
   );
 
-  const signOut = useCallback(() => {
+  const signOut = useCallback((redirectTo = '/') => {
     setAccessToken(null);
     setHasToken(false);
     setState({ me: null, loading: false, error: null });
+    window.location.href = redirectTo;
   }, []);
 
   return {

@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, computed_field, field_validator
+from pydantic import AliasChoices, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.rbac import parse_next_allowlist_csv
@@ -29,18 +29,38 @@ class Settings(BaseSettings):
 
     secret_key: str = Field(
         default="change-me-use-long-random-string",
+        validation_alias=AliasChoices("SECRET_KEY", "JWT_SECRET"),
         min_length=16,
         description="HMAC secret for OAuth state and SafeRide-issued access tokens",
     )
-    access_token_expire_minutes: int = Field(default=60 * 24, ge=1)
+    access_token_expire_minutes: int = Field(
+        default=60 * 24,
+        ge=1,
+        validation_alias=AliasChoices("ACCESS_TOKEN_EXPIRE_MINUTES", "JWT_ACCESS_EXPIRES_MINUTES"),
+    )
+    refresh_token_expire_days: int = Field(
+        default=30,
+        ge=1,
+        validation_alias=AliasChoices("REFRESH_TOKEN_EXPIRE_DAYS", "JWT_REFRESH_EXPIRES_DAYS"),
+    )
 
     cors_origins_csv: str = Field(
         default="http://localhost:3000,http://127.0.0.1:3000",
         validation_alias="CORS_ORIGINS",
     )
+    cors_origin_regex: str = Field(
+        default=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        validation_alias="CORS_ORIGIN_REGEX",
+        description="Regex used by CORS middleware for local dev origins on any port",
+    )
 
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
+    admin_bootstrap_secret: str = Field(
+        default="",
+        validation_alias="ADMIN_BOOTSTRAP_SECRET",
+        description="Optional secret to bootstrap first local system_admin account (dev/onetime)",
+    )
 
     # --- Frontend + OAuth redirect (RBAC) ---
     frontend_app_url: str = Field(
@@ -59,21 +79,31 @@ class Settings(BaseSettings):
         return parse_next_allowlist_csv(self.oauth_next_path_allowlist)
 
     # --- MOSIP eSignet (OIDC) ---
+    app_base_url: str = Field(default="http://localhost:8000", validation_alias="APP_BASE_URL")
+    esignet_issuer: str = Field(default="http://localhost:8088", validation_alias="ESIGNET_ISSUER")
     esignet_base_url: str = Field(
-        default="",
+        default="http://localhost:8088",
         description="Base URL of the running eSignet instance (for logging / future discovery helpers)",
     )
     esignet_authorization_url: str = Field(
-        default="",
+        default="http://localhost:8088/authorize",
+        validation_alias=AliasChoices("ESIGNET_AUTHORIZATION_URL", "ESIGNET_AUTHORIZATION_ENDPOINT"),
         description="OAuth2/OIDC authorization endpoint (full URL)",
     )
     esignet_token_url: str = Field(
-        default="",
+        default="http://localhost:8088/v1/esignet/oauth/v2/token",
+        validation_alias=AliasChoices("ESIGNET_TOKEN_URL", "ESIGNET_TOKEN_ENDPOINT"),
         description="OAuth2 token endpoint (full URL)",
     )
     esignet_userinfo_url: str = Field(
-        default="",
+        default="http://localhost:8088/v1/esignet/oidc/userinfo",
+        validation_alias=AliasChoices("ESIGNET_USERINFO_URL", "ESIGNET_USERINFO_ENDPOINT"),
         description="OIDC userinfo endpoint (full URL)",
+    )
+    esignet_jwks_uri: str = Field(
+        default="http://localhost:8088/.well-known/jwks.json",
+        validation_alias="ESIGNET_JWKS_URI",
+        description="OIDC JWKS URI used to validate ID token signatures",
     )
     esignet_wellknown_url: str = Field(
         default="",
@@ -81,7 +111,7 @@ class Settings(BaseSettings):
     )
     esignet_client_id: str = Field(default="", description="Registered OIDC client id")
     esignet_redirect_uri: str = Field(
-        default="",
+        default="http://localhost:8000/auth/esignet/callback",
         description="Callback URL registered with eSignet (must match this deployment)",
     )
     esignet_scopes: str = Field(
@@ -95,6 +125,16 @@ class Settings(BaseSettings):
     esignet_private_key_path: Path | None = Field(
         default=None,
         description="PEM path for RSA private key (private_key_jwt client auth at token endpoint)",
+    )
+    esignet_private_key_kid: str = Field(
+        default="",
+        validation_alias="ESIGNET_PRIVATE_KEY_KID",
+        description="Optional JOSE kid header for private_key_jwt assertions",
+    )
+    esignet_client_assertion_alg: str = Field(
+        default="RS256",
+        validation_alias="ESIGNET_CLIENT_ASSERTION_ALG",
+        description="Signing algorithm for private_key_jwt (RS256/PS256/ES256)",
     )
     esignet_public_key_path: Path | None = Field(
         default=None,

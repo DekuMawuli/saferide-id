@@ -1,10 +1,11 @@
-"""MOSIP eSignet OIDC client (server-side only; no proxy of IdP routes)."""
+"""MOSIP eSignet OIDC client with PKCE + private_key_jwt + JWKS ID token verification."""
 
 from __future__ import annotations
 
 import logging
 import secrets
 import time
+import uuid
 from typing import Any
 from urllib.parse import urlencode
 
@@ -13,14 +14,24 @@ import jwt
 from jwt.exceptions import InvalidTokenError, PyJWTError
 
 from app.core.config import Settings
+from app.schemas.auth import ESignetTokenResponse
+from app.services.jwks_service import jwks_service
 
 logger = logging.getLogger(__name__)
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
 
-class ESignetConfigError(RuntimeError):
+class MissingConfigError(RuntimeError):
     """Raised when mandatory eSignet settings are missing."""
+
+
+class TokenExchangeError(RuntimeError):
+    """Raised when token endpoint exchange fails."""
+
+
+class IdTokenVerificationError(RuntimeError):
+    """Raised when ID token is invalid."""
 
 
 class ESignetService:
@@ -38,20 +49,23 @@ class ESignetService:
         missing = [
             name
             for name, val in (
-                ("ESIGNET_AUTHORIZATION_URL", self._s.esignet_authorization_url),
-                ("ESIGNET_TOKEN_URL", self._s.esignet_token_url),
-                ("ESIGNET_USERINFO_URL", self._s.esignet_userinfo_url),
+                ("ESIGNET_ISSUER", self._s.esignet_issuer),
+                ("ESIGNET_AUTHORIZATION_ENDPOINT", self._s.esignet_authorization_url),
+                ("ESIGNET_TOKEN_ENDPOINT", self._s.esignet_token_url),
+                ("ESIGNET_USERINFO_ENDPOINT", self._s.esignet_userinfo_url),
+                ("ESIGNET_JWKS_URI", self._s.esignet_jwks_uri),
                 ("ESIGNET_CLIENT_ID", self._s.esignet_client_id),
                 ("ESIGNET_REDIRECT_URI", self._s.esignet_redirect_uri),
+                ("ESIGNET_PRIVATE_KEY_PATH", str(self._s.esignet_private_key_path or "")),
             )
             if not val
         ]
         if missing:
-            raise ESignetConfigError(
+            raise MissingConfigError(
                 f"Missing required eSignet configuration: {', '.join(missing)}"
             )
 
-    def get_authorization_url(self, state: str) -> str:
+    def get_authorization_url(self, *, state: str, code_challenge: str, nonce: str) -> str:
         """Build the browser redirect URL for the OIDC authorization endpoint."""
         self._require_oidc_urls()
         params: dict[str, str] = {
@@ -60,6 +74,9 @@ class ESignetService:
             "redirect_uri": self._s.esignet_redirect_uri,
             "scope": self._s.esignet_scopes.strip(),
             "state": state,
+            "nonce": nonce,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
         acr = self._s.esignet_acr_values.strip()
         if acr:
@@ -67,31 +84,34 @@ class ESignetService:
         query = urlencode(params)
         return f"{self._s.esignet_authorization_url}?{query}"
 
-    def _build_client_assertion_jwt(self) -> str | None:
-        """
-        RFC 7523 private_key_jwt for the token endpoint.
-
-        Returns None if no private key is configured (some dev stacks accept
-        code exchange without client authentication — not for production).
-        """
+    def _build_client_assertion_jwt(self) -> str:
+        """RFC 7523 private_key_jwt for token endpoint authentication."""
         path = self._s.esignet_private_key_path
         if path is None or not path.is_file():
-            return None
+            raise MissingConfigError("ESIGNET_PRIVATE_KEY_PATH is missing or unreadable")
         with path.open(encoding="utf-8") as f:
             private_pem = f.read()
         now = int(time.time())
         payload: dict[str, Any] = {
             "iss": self._s.esignet_client_id,
             "sub": self._s.esignet_client_id,
-            # TODO: Confirm `aud` with your eSignet version (string vs list, realm path).
             "aud": self._s.esignet_token_url,
-            "jti": secrets.token_urlsafe(24),
+            "jti": str(uuid.uuid4()),
             "exp": now + 300,
             "iat": now,
         }
-        return jwt.encode(payload, private_pem, algorithm="RS256")
+        headers: dict[str, str] = {"typ": "JWT"}
+        kid = self._s.esignet_private_key_kid.strip()
+        if kid:
+            headers["kid"] = kid
+        return jwt.encode(
+            payload,
+            private_pem,
+            algorithm=self._s.esignet_client_assertion_alg,
+            headers=headers,
+        )
 
-    async def exchange_code_for_token(self, code: str) -> dict[str, Any]:
+    async def exchange_code_for_token(self, *, code: str, code_verifier: str | None = None) -> ESignetTokenResponse:
         """Exchange an authorization code for tokens at the eSignet token endpoint."""
         self._require_oidc_urls()
         data: dict[str, str] = {
@@ -100,16 +120,11 @@ class ESignetService:
             "redirect_uri": self._s.esignet_redirect_uri,
             "client_id": self._s.esignet_client_id,
         }
+        if code_verifier:
+            data["code_verifier"] = code_verifier
         assertion = self._build_client_assertion_jwt()
-        if assertion:
-            data["client_assertion"] = assertion
-            data["client_assertion_type"] = CLIENT_ASSERTION_TYPE
-        else:
-            logger.warning(
-                "eSignet token exchange without private_key_jwt; "
-                "set ESIGNET_PRIVATE_KEY_PATH for production integrations."
-            )
-        # TODO: Add PKCE (`code_verifier`) when your eSignet client registration requires it.
+        data["client_assertion"] = assertion
+        data["client_assertion_type"] = CLIENT_ASSERTION_TYPE
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 self._s.esignet_token_url,
@@ -119,11 +134,15 @@ class ESignetService:
         if response.status_code >= 400:
             detail = response.text[:2000]
             logger.error("eSignet token endpoint error %s: %s", response.status_code, detail)
-            response.raise_for_status()
+            raise TokenExchangeError(f"Token endpoint rejected authorization code ({response.status_code})")
         try:
-            return response.json()
+            body = response.json()
         except ValueError as exc:
-            raise ValueError("eSignet token response was not valid JSON") from exc
+            raise TokenExchangeError("eSignet token response was not valid JSON") from exc
+        try:
+            return ESignetTokenResponse.model_validate(body)
+        except Exception as exc:  # noqa: BLE001
+            raise TokenExchangeError(f"Token payload shape invalid: {exc}") from exc
 
     async def fetch_userinfo(self, access_token: str) -> dict | str:
         """Call the OIDC userinfo endpoint with the access token."""
@@ -146,56 +165,128 @@ class ESignetService:
             return response.json()
         return response.text
 
-    def verify_and_parse_userinfo(self, userinfo_token_or_payload: dict | str) -> dict[str, Any]:
+    async def verify_id_token(self, id_token: str, *, nonce: str) -> dict[str, Any]:
+        """Verify id_token signature + standard OIDC claims using JWKS."""
+        self._require_oidc_urls()
+        try:
+            header = jwt.get_unverified_header(id_token)
+        except PyJWTError as exc:
+            raise IdTokenVerificationError(f"Malformed id_token header: {exc}") from exc
+        kid = header.get("kid")
+        key = await jwks_service.get_signing_key(self._s.esignet_jwks_uri, kid)
+        try:
+            claims = jwt.decode(
+                id_token,
+                key=key,
+                algorithms=["RS256", "PS256"],
+                audience=self._s.esignet_client_id,
+                options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+            )
+        except PyJWTError as exc:
+            raise IdTokenVerificationError(f"id_token verification failed: {exc}") from exc
+        token_issuer = str(claims.get("iss") or "").rstrip("/")
+        allowed_issuers = {
+            str(self._s.esignet_issuer or "").rstrip("/"),
+            str(self._s.esignet_base_url or "").rstrip("/"),
+        }
+        base_issuer = str(self._s.esignet_issuer or "").rstrip("/")
+        base_url = str(self._s.esignet_base_url or "").rstrip("/")
+        if base_issuer:
+            allowed_issuers.add(f"{base_issuer}/v1/esignet")
+        if base_url:
+            allowed_issuers.add(f"{base_url}/v1/esignet")
+        allowed_issuers.discard("")
+        if not token_issuer or token_issuer not in allowed_issuers:
+            expected_display = ", ".join(sorted(allowed_issuers)) or "<none>"
+            raise IdTokenVerificationError(
+                f"id_token verification failed: Invalid issuer (got={token_issuer or '<empty>'}, expected one of: {expected_display})"
+            )
+        if nonce and claims.get("nonce") != nonce:
+            raise IdTokenVerificationError("id_token nonce mismatch")
+        return dict(claims)
+
+    async def verify_and_parse_userinfo(self, userinfo_token_or_payload: dict | str) -> dict[str, Any]:
         """
         Normalize userinfo into a plain claims dict.
 
-        - JSON object responses are passed through (structure only — no signature).
-        - Compact JWT strings are verified when `ESIGNET_PUBLIC_KEY_PATH` is set.
-
-        TODO: Resolve signing keys from `jwks_uri` in ESIGNET_WELLKNOWN metadata
-        (key rotation, ES256, issuer/audience alignment per MOSIP release).
+        - JSON object responses are passed through (already protected by TLS + access token).
+        - Compact JWT strings are verified via JWKS using the kid from the JWT header.
         """
         if isinstance(userinfo_token_or_payload, dict):
-            # TODO: If eSignet returns nested signed JWTs inside JSON, verify each fragment.
             return dict(userinfo_token_or_payload)
 
         raw = str(userinfo_token_or_payload).strip()
         if raw.count(".") != 2:
             raise ValueError("userinfo body is not JSON and not a compact JWT")
 
-        pubkey_path = self._s.esignet_public_key_path
-        if pubkey_path is not None and pubkey_path.is_file():
-            with pubkey_path.open(encoding="utf-8") as f:
-                public_pem = f.read()
-            try:
-                # TODO: Set verify_aud / issuer against eSignet metadata.
-                decoded = jwt.decode(
-                    raw,
-                    public_pem,
-                    algorithms=["RS256"],
-                    options={"verify_aud": False},
-                )
-                return dict(decoded)
-            except InvalidTokenError as exc:
-                raise ValueError(f"userinfo JWT signature verification failed: {exc}") from exc
+        try:
+            header = jwt.get_unverified_header(raw)
+        except PyJWTError as exc:
+            raise ValueError(f"Malformed userinfo JWT header: {exc}") from exc
 
-        logger.warning(
-            "Decoding userinfo JWT without signature verification. "
-            "Configure ESIGNET_PUBLIC_KEY_PATH or implement JWKS fetching."
-        )
+        kid = header.get("kid")
+        key = await jwks_service.get_signing_key(self._s.esignet_jwks_uri, kid)
         try:
             decoded = jwt.decode(
                 raw,
-                options={"verify_signature": False},
-                algorithms=["RS256", "ES256"],
+                key=key,
+                algorithms=["RS256", "PS256"],
+                options={"verify_aud": False},
             )
-        except PyJWTError as exc:
-            raise ValueError(f"failed to decode userinfo JWT: {exc}") from exc
+        except InvalidTokenError as exc:
+            raise ValueError(f"userinfo JWT signature verification failed: {exc}") from exc
         return dict(decoded)
 
     def normalize_claims(self, claims: dict[str, Any]) -> dict[str, Any]:
         """Map OIDC-style claims into SafeRide operator fields."""
+        def _pick_phone(value: Any) -> str | None:
+            if isinstance(value, str):
+                v = value.strip()
+                return v or None
+            if isinstance(value, dict):
+                nested = (
+                    value.get("value")
+                    or value.get("number")
+                    or value.get("phone_number")
+                    or value.get("phone")
+                    or value.get("mobile")
+                    or value.get("mobile_number")
+                    or value.get("msisdn")
+                )
+                return _pick_phone(nested)
+            if isinstance(value, list):
+                for item in value:
+                    p = _pick_phone(item)
+                    if p:
+                        return p
+            return None
+
+        def _extract_phone(payload: dict[str, Any]) -> str | None:
+            # Common direct claims.
+            for key in ("phone_number", "phone", "mobile", "mobile_number", "msisdn"):
+                p = _pick_phone(payload.get(key))
+                if p:
+                    return p
+            # Common nested OIDC/eKYC shapes.
+            nested_candidates = [
+                payload.get("verified_claims"),
+                payload.get("claims"),
+                payload.get("identity"),
+                payload.get("credentialSubject"),
+                payload.get("vc"),
+            ]
+            for node in nested_candidates:
+                if isinstance(node, dict):
+                    for key in ("phone_number", "phone", "mobile", "mobile_number", "msisdn"):
+                        p = _pick_phone(node.get(key))
+                        if p:
+                            return p
+                    for sub in node.values():
+                        p = _pick_phone(sub)
+                        if p:
+                            return p
+            return None
+
         sub = claims.get("sub")
         if not sub:
             raise ValueError("eSignet userinfo is missing required `sub` claim")
@@ -215,11 +306,18 @@ class ESignetService:
         else:
             acr = None
 
+        phone = _extract_phone(claims)
+
         return {
             "external_subject_id": str(sub),
             "full_name": name,
-            "phone": claims.get("phone_number") or claims.get("phone"),
+            "email": claims.get("email"),
+            "phone": phone,
             "photo_ref": claims.get("picture"),
+            "individual_id": claims.get("individual_id"),
+            "gender": claims.get("gender"),
+            "birthdate": claims.get("birthdate"),
+            "registration_type": claims.get("registration_type"),
             "acr": acr,
         }
 

@@ -48,14 +48,24 @@ function ConsentInner() {
     setError(null);
     try {
       const res = await respondConsentRequest(requestId, approve);
+      if (res.status === 'expired') {
+        setError('This request expired before you could respond. The passenger will need to request again.');
+        setReq((r) => (r ? { ...r, status: 'expired' } : r));
+        return;
+      }
       setDone(
         approve
-          ? `Approved. Passenger can use disclosure token (expires ${res.disclosure_token_expires_at ?? '—'}).`
+          ? `Approved. Passenger can now see your details (token expires ${res.disclosure_token_expires_at ? new Date(res.disclosure_token_expires_at).toLocaleTimeString() : '—'}).`
           : 'Request denied.',
       );
       setReq((r) => (r ? { ...r, status: res.status } : r));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Failed');
+      const msg = e instanceof ApiError
+        ? e.message
+        : e instanceof Error
+          ? e.message
+          : 'Network error — could not reach the server. Please try again.';
+      setError(msg);
     } finally {
       setBusy(false);
     }

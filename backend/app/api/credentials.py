@@ -9,7 +9,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
+from app.api.auth import get_current_operator, require_governance_operator, require_governance_read_operator
 from app.core.config import Settings, get_settings
+from app.db.models.credential import Credential
+from app.db.models.operator import Operator
 from app.db.session import get_session
 from app.schemas.credential import CredentialIssueResponse, CredentialRead
 from app.services.credential_service import (
@@ -18,6 +21,7 @@ from app.services.credential_service import (
     issue_operator_credential,
     issue_vehicle_binding_credential,
 )
+from sqlmodel import select
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,7 @@ def get_settings_dep() -> Settings:
 )
 async def issue_operator_vc(
     operator_id: UUID,
+    _actor: Annotated[Operator, Depends(require_governance_operator)],
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> CredentialIssueResponse:
@@ -57,6 +62,7 @@ async def issue_operator_vc(
 async def issue_vehicle_binding_vc(
     operator_id: UUID,
     vehicle_id: UUID,
+    _actor: Annotated[Operator, Depends(require_governance_operator)],
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> CredentialIssueResponse:
@@ -77,9 +83,25 @@ async def issue_vehicle_binding_vc(
     )
 
 
+@router.get("/my", response_model=list[CredentialRead])
+def list_my_credentials(
+    actor: Annotated[Operator, Depends(get_current_operator)],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[CredentialRead]:
+    """Return all credentials issued to the currently authenticated operator."""
+    stmt = (
+        select(Credential)
+        .where(Credential.operator_id == actor.id)
+        .order_by(Credential.created_at.desc())
+    )
+    rows = list(session.exec(stmt).all())
+    return [CredentialRead.model_validate(r) for r in rows]
+
+
 @router.get("/{credential_id}", response_model=CredentialRead)
 def read_credential(
     credential_id: UUID,
+    _actor: Annotated[Operator, Depends(require_governance_read_operator)],
     session: Annotated[Session, Depends(get_session)],
 ) -> CredentialRead:
     """Fetch a persisted credential record by id."""

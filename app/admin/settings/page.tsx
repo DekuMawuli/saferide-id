@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -8,8 +9,32 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { Settings, ShieldCheck, Bell, Building, ArrowLeft, Save } from 'lucide-react';
+import { apiFetch, ApiError } from '@/lib/api/client';
+import { toast } from 'sonner';
+
+type Health = { status: string; service: string; environment: string; database: string };
+type Me = { authenticated: boolean; role: string | null; operator: { full_name: string | null; email?: string | null } | null };
 
 export default function AdminSettingsPage() {
+  const [health, setHealth] = useState<Health | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [supportEmail, setSupportEmail] = useState('');
+  const [supportPhone, setSupportPhone] = useState('');
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [h, m] = await Promise.all([apiFetch<Health>('/health'), apiFetch<Me>('/auth/me')]);
+        setHealth(h);
+        setMe(m);
+        setSupportEmail(m.operator?.email || '');
+      } catch (e) {
+        toast.error(e instanceof ApiError ? e.message : 'Failed to load settings');
+      }
+    };
+    void load();
+  }, []);
+
   return (
     <div className="container mx-auto max-w-5xl">
         <div className="mb-6">
@@ -56,15 +81,51 @@ export default function AdminSettingsPage() {
                     <div className="space-y-4">
                       <div className="grid gap-2">
                         <Label htmlFor="org-name">Organization Name</Label>
-                        <Input id="org-name" defaultValue="SafeRide Trust Network" className="max-w-md" />
+                        <Input
+                          id="org-name"
+                          value={health?.service || 'SafeRide'}
+                          onChange={() => {}}
+                          className="max-w-md"
+                          readOnly
+                        />
                       </div>
                       <div className="grid gap-2">
                         <Label htmlFor="support-email">Support Email</Label>
-                        <Input id="support-email" type="email" defaultValue="support@saferide.org" className="max-w-md" />
+                        <Input
+                          id="support-email"
+                          type="email"
+                          value={supportEmail}
+                          onChange={(e) => setSupportEmail(e.target.value)}
+                          className="max-w-md"
+                        />
                       </div>
                       <div className="grid gap-2">
                         <Label htmlFor="support-phone">Emergency Contact Phone</Label>
-                        <Input id="support-phone" type="tel" defaultValue="+256 800 123 456" className="max-w-md" />
+                        <Input
+                          id="support-phone"
+                          type="tel"
+                          value={supportPhone}
+                          onChange={(e) => setSupportPhone(e.target.value)}
+                          className="max-w-md"
+                          placeholder="+255..."
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Environment</Label>
+                        <Input value={health?.environment || 'unknown'} onChange={() => {}} readOnly className="max-w-md" />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Database status</Label>
+                        <Input value={health?.database || 'unknown'} onChange={() => {}} readOnly className="max-w-md" />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Signed in as</Label>
+                        <Input
+                          value={`${me?.operator?.full_name || 'Unknown'} (${me?.role || '—'})`}
+                          onChange={() => {}}
+                          readOnly
+                          className="max-w-md"
+                        />
                       </div>
                     </div>
                     <div className="pt-4 border-t border-slate-100 flex justify-end">

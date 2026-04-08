@@ -94,7 +94,7 @@ Use a **consistent host** for the API in the browser (e.g. always `127.0.0.1` or
 
 ### Auth & session
 
-- **`GET /auth/esignet/login`** — Starts OIDC; optional **`?next=`** (allowlisted path). Sets signed OAuth cookie.
+- **`GET /auth/esignet/login`** — Starts OIDC; optional **`?next=`** (allowlisted path). Generates state + PKCE and redirects to eSignet (`?response_mode=json` returns auth URL payload).
 - **`GET /auth/esignet/callback`** — Default: **302** to `FRONTEND_APP_URL` + path + **`#access_token=…&role=…`**. **`?response_mode=json`** returns JSON (e.g. for curl).
 - **`GET /auth/me`** — Bearer SafeRide JWT → operator profile + **`role`**.
 
@@ -127,8 +127,107 @@ JWT is issued by SafeRide (not eSignet); it includes **`sub`** (operator id) and
 
 ### Integrations
 
-- **eSignet**: `app/services/esignet_service.py` — authorize URL, token exchange (optional `private_key_jwt`), userinfo, JWT/JSON parsing (TODOs for full JWKS/audience hardening).
+- **eSignet**: `app/services/esignet_service.py` — authorize URL, PKCE, `private_key_jwt` token exchange, JWKS-backed ID token verification, and userinfo merge.
 - **Inji Certify**: `app/services/inji_certify_service.py` — placeholder POST bodies and response normalization; tune to your OpenAPI.
+
+---
+
+## eSignet Local Integration Setup
+
+This backend now uses production-grade OIDC hardening for local eSignet:
+
+- Authorization Code flow
+- PKCE (`S256`)
+- short-lived `state` transaction store (in-memory, swappable with Redis)
+- token endpoint authentication via `private_key_jwt`
+- strict ID token verification against JWKS (`iss`, `aud`, `exp`, signature, nonce)
+- local SafeRide access + refresh token issuance after identity verification
+
+### Required environment values
+
+Set these in `backend/.env` (copy from `backend/.env.example`):
+
+- `ESIGNET_ISSUER` (`http://localhost:8088` for local)
+- `ESIGNET_AUTHORIZATION_ENDPOINT`
+- `ESIGNET_TOKEN_ENDPOINT`
+- `ESIGNET_USERINFO_ENDPOINT`
+- `ESIGNET_JWKS_URI`
+- `ESIGNET_CLIENT_ID`
+- `ESIGNET_REDIRECT_URI` (must be exactly registered in eSignet)
+- `ESIGNET_PRIVATE_KEY_PATH` (private key matching registered client key/JWK)
+- optional `ESIGNET_PRIVATE_KEY_KID`
+- optional `ESIGNET_CLIENT_ASSERTION_ALG` (`RS256` default)
+- `SECRET_KEY` (or `JWT_SECRET`)
+
+### Redirect URI registration
+
+Register the callback URI in eSignet client configuration exactly as used by this API:
+
+- `http://localhost:8000/auth/esignet/callback` (or your deployed callback URL)
+
+Mismatch here causes token exchange failures.
+
+### Docker/localhost caveat
+
+If FastAPI runs inside Docker, `localhost` inside the container points to the container, not your host machine.
+Use host-reachable DNS/IP for eSignet endpoints (for example `host.docker.internal` on compatible setups), and update all `ESIGNET_*` URLs consistently.
+
+### Local test flow
+
+1. Start backend:
+   - `make backend`
+2. Start frontend (optional for browser UX):
+   - `make frontend`
+3. Start auth:
+   - Browser: open `http://localhost:8000/auth/esignet/login`
+   - JSON mode (debug): `http://localhost:8000/auth/esignet/login?response_mode=json`
+4. Authenticate in eSignet UI.
+5. On callback:
+   - default mode: backend redirects to frontend with token hash
+   - JSON mode: callback returns local auth payload (operator + access/refresh tokens)
+6. Verify local session:
+   - call `GET /auth/me` with `Authorization: Bearer <access_token>`
+
+### Internal staff/admin auth (non-eSignet)
+
+System monitors/admins use local staff auth, not eSignet onboarding.
+
+1. Set `ADMIN_BOOTSTRAP_SECRET` in `backend/.env` (dev bootstrap only).
+2. Bootstrap first system admin (once):
+   - `POST /auth/admin/bootstrap` with `email`, `password`, `full_name`, `bootstrap_secret`
+3. Login staff:
+   - `POST /auth/admin/login` with `email` + `password`
+   - `POST /auth/rider/login` with `phone` + `password` (daily rider login; eSignet remains for onboarding verification)
+4. Create additional platform users (system admin only):
+   - `POST /auth/admin/users` with role `monitor|support|officer|driver|admin|system_admin`
+   - rider/passenger creation is intentionally rejected on this endpoint
+5. Officers onboard transport-side identities:
+   - `POST /operators/enroll` with role `driver` or `passenger`
+   - passenger records are created in `PENDING` until eSignet onboarding is completed
+   - `POST /operators/{id}/onboarding/esignet/start` starts passenger eSignet verification
+6. Corporate body lifecycle:
+   - `POST /corporate-bodies` create corporate body (system_admin only)
+   - `POST /corporate-bodies/{corporate_id}/officers/{officer_id}` attach officer to corporate body (system_admin only)
+   - `GET /corporate-bodies` and `GET /corporate-bodies/{corporate_id}/officers`
+   - `POST /auth/officers/users` creates fellow officers under the creator's corporate body
+
+Role intent:
+
+- `monitor`: read-only governance visibility
+- `support`: operations support visibility
+- `officer`: governance write actions
+- `admin`: governance + management
+- `system_admin`: internal superuser for staff lifecycle/security
+
+### Known Missing Inputs
+
+- [ ] `ESIGNET_CLIENT_ID` (actual registered client id)
+- [ ] `ESIGNET_PRIVATE_KEY_PATH` (real key file path)
+- [ ] Redirect URI registered in eSignet must match `ESIGNET_REDIRECT_URI`
+- [ ] Decide whether `ESIGNET_PRIVATE_KEY_KID` is required by your eSignet registration
+- [ ] Confirm frontend completion mode:
+  - hash redirect flow (default), or
+  - callback JSON handling by frontend/mobile app
 
 ---
 
@@ -155,70 +254,181 @@ Override **`BACKEND_HOST`** / **`BACKEND_PORT`** if needed.
 
 ---
 
-## Roadmap & tasks (TODO)
+## End-to-end verification flow
 
-This list merges **engineering gaps** (previously under “Known gaps”) with **product submission** work described in [PROGRESS.md](./PROGRESS.md). Items are unchecked until shipped.
+SafeRide's core loop connects a **passenger who wants to verify their driver** to a **driver who must consent**, and logs the interaction as a trust event. There are two channels: a smartphone/web path and a USSD/feature-phone path. Both share the same backend services.
 
-### Comparison (what README already said vs submission scope)
+---
 
-| Source | Focus |
-|--------|--------|
-| **Earlier README “gaps”** | Production hardening, JWKS/Inji alignment, admin UX, replacing mocks, optional OAuth code flow. |
-| **Product / submission** | End-to-end trust path: real VC issuance, passenger verification with minimal trust facts, multi-channel access (QR/NFC/SMS/USSD/voice/short-code), consent unlock, panic share, SACCO/authority governance, wallet/signed badge/offline verify. |
+### Channel A — Web / QR (smartphone)
 
-The sections below **deduplicate** those into one backlog.
+```
+PASSENGER                          SAFERIDE BACKEND                     DRIVER APP
+    |                                      |                                  |
+    | 1. Scan QR / type short code         |                                  |
+    |------------------------------------->|                                  |
+    |                                      |  GET /public/trust/{code}        |
+    |  2. Receives MINIMAL trust card      |  tier=minimal                    |
+    |<-------------------------------------|  (masked name, trust_band,       |
+    |  name: “A. M***”                     |   plates — no auth needed)       |
+    |  status: ACTIVE                      |                                  |
+    |  trust_band: CLEAR                   |                                  |
+    |  vehicles: [KAA 123X]                |                                  |
+    |                                      |                                  |
+    | 3. Taps “Request verified details”   |                                  |
+    |------------------------------------->|                                  |
+    |                                      |  POST /public/consent/request    |
+    |  4. Gets request_id, told to wait    |  channel=web                     |
+    |<-------------------------------------|  → creates ConsentRequest row    |
+    |                                      |  → SMS sim: “New request”        |
+    |  [polls every 2.5s]                  |                                  |
+    |------- GET /public/consent/-----→   |                                  |
+    |         status/{request_id}          |                                  |
+    |                                      |  5. Driver sees pending request  |
+    |                                      |----------------------------------→
+    |                                      |  GET /auth/me/consent-requests   |
+    |                                      |  (driver's portal / profile tab) |
+    |                                      |                                  |
+    |                                      |  6. Driver taps Approve          |
+    |                                      |<---------------------------------|
+    |                                      |  POST /auth/me/consent-requests  |
+    |                                      |       /{id}/respond              |
+    |                                      |  status=approved                 |
+    |                                      |  → issues disclosure_token       |
+    |                                      |  → writes consent_audit_entry    |
+    |                                      |                                  |
+    |  7. Poll returns: approved +         |                                  |
+    |     disclosure_token                 |                                  |
+    |<-------------------------------------|                                  |
+    |                                      |                                  |
+    | 8. Re-fetches trust (EXTENDED tier)  |                                  |
+    |------------------------------------->|                                  |
+    |                                      |  GET /public/trust/{code}        |
+    |                                      |  tier=extended                   |
+    |                                      |  &disclosure_token=...           |
+    |  9. Sees full name, phone,           |                                  |
+    |     eSignet-verified timestamp       |                                  |
+    |<-------------------------------------|                                  |
+    |                                      |                                  |
+    | 10. Boards ride — consent_audit_entry is the trip record                |
+    |                                      |                                  |
+    | [optional] Taps “Panic share”        |                                  |
+    |------------------------------------->|  POST /public/emergency/share    |
+    |                                      |  → sim SMS to recipients         |
+    |  Ref ID returned                     |  → logged as 'panic' in SMS      |
+    |<-------------------------------------|    outbox (visible in admin)     |
+```
 
-### Milestone 1 — Finish the real golden path (highest priority)
+---
 
-- [x] **eSignet login** — Present; deep-link `next=` now allows `/portal/*`, `/admin/*`, `/driver/*` subpaths.
-- [x] **Operator approval** — `PATCH /operators/{id}/status` + officer/admin UI (portal detail + lists). Short code issued on `APPROVED`/`ACTIVE`.
-- [x] **Vehicle binding** — `POST /vehicles`, `POST /operators/{id}/vehicle-bindings`, driver reads bindings; issuance still requires active binding + eligible status.
-- [ ] **Real Inji Certify issuance** — Replace placeholder payloads/paths; enable in env; map fields to your deployment; persist credential references.
-- [x] **QR badge generation** — QR encodes app URL `/verify/result/{short_code}` (not yet a signed VC / wallet badge).
-- [x] **Verifier screen** — `/verify/result/[id]` calls **`GET /public/trust/{code}`** (minimal facts + `trust_band`). Not VC-crypto verification yet.
+### Channel B — USSD / feature phone
 
-### Milestone 2 — Trust-status operations (governance)
+```
+PASSENGER (feature phone)          USSD SIMULATOR                  SAFERIDE BACKEND
+    |                                     |                                |
+    | 1. Dials *XXX# (or uses            |                                |
+    |    /simulate/ussd UI)              |                                |
+    |----------------------------------→ |                                |
+    |                                     |  POST /public/simulate/ussd   |
+    |  CON SafeRide                       |  msisdn, session_id, input    |
+    |  1 Verify driver                    |                                |
+    |  2 Panic share                      |                                |
+    |  3 Request more detail             |                                |
+    |  0 Exit                             |                                |
+    |<----------------------------------- |                                |
+    |                                     |                                |
+    | 2. Presses 1 → “Enter short code:” |                                |
+    | 3. Types SR-XXXX                    |                                |
+    |----------------------------------→ |                                |
+    |                                     |  get_trust_public(code,        |
+    |                                     |  tier=”minimal”)               |
+    |  END: Ali M.|ACTIVE|KAA 123X|CLEAR |                                |
+    |<----------------------------------- |  + log_sim_sms(tag=”ussd”)    |
+    |                                     |                                |
+    | [OR option 2: Panic share]          |                                |
+    | Types short code                    |                                |
+    |----------------------------------→ |  create_emergency_share()      |
+    |  END: Panic shared. Ref=abc12345   |  sim SMS → recipients         |
+    |<----------------------------------- |  logged tag=”panic”           |
+    |                                     |                                |
+    | [OR option 3: Request more detail] |                                |
+    | Types short code                    |                                |
+    |----------------------------------→ |  create_consent_request(       |
+    |  END: Request abc12345.            |  channel=”ussd”)               |
+    |  Ask driver to approve.            |  log_sim_sms(tag=”consent”)   |
+    |<----------------------------------- |  → driver approves in app     |
+    |  (SMS arrives: “Consent requested”)|  → passenger polls REST API   |
+```
 
-- [x] **States** — `PENDING` / `APPROVED` / `ACTIVE` / `SUSPENDED` / `EXPIRED` in API + UI (enforcement is role/status based, not full policy engine).
-- [x] **Officer/admin dashboard** — Live **portal** + **admin** operator lists, operator detail (status + bind/unbind), **portal/vehicles** registry; **RoleGate** on layouts.
-- [ ] **SACCO / authority workflows** — Still generic officer/admin; tailor when requirements are fixed.
+---
 
-### Milestone 3 — Minimal trust facts (privacy by default)
+### What gets logged (audit trail)
 
-- [x] **Disclosure policy** — `tier=minimal` masks name, omits photo/phone/operator_id; `standard` is web default; `extended` adds phone + verified timestamp + masked subject **after** operator consent.
-- [x] **Consent / unlock** — `POST /public/consent/request` → poll **`/public/consent/status/{id}`** → driver **`/auth/me/consent-requests`** + respond → disclosure token; **audit** rows in `consent_audit_entries`.
-- [x] **Separate API shapes** — Single `TrustPublicResponse` with `disclosure_tier` and conditional fields.
+| Event | Where recorded | Admin view |
+|-------|---------------|------------|
+| Driver verified (USSD) | `sim_sms` row, tag=`ussd` | `/admin/incidents` + `/admin/audit` |
+| Consent requested | `consent_requests` table + `sim_sms` tag=`consent` | `/admin/audit` |
+| Consent approved/denied | `consent_audit_entries` table | `/admin/audit` |
+| Panic shared | `emergency_shares` table + `sim_sms` tag=`panic` | `/admin/incidents` |
+| Report submitted | `public_reports` table + `sim_sms` tag=`report` | `/portal/incidents` + `/admin/incidents` |
 
-### Milestone 4 — One low-resource verification channel
+---
 
-- [x] **Short-code trust lookup** — **`GET /public/trust/{code}`** + verify result page.
-- [x] **USSD + SMS (simulated)** — **`POST /public/simulate/ussd`** (menu: verify / panic / consent) + **`GET/POST /public/simulate/sms`** outbox; **no auth** (lab only).
-- *Later:* Real carrier integrations, voice hotline, human/stage verification.
+### Inji stack integration (current + next steps)
 
-### Milestone 5 — Emergency / panic share
+| Component | Role in SafeRide | Status |
+|-----------|-----------------|--------|
+| **eSignet** | Driver identity verification at onboarding — issues `esignet_verified_at` | ✅ Working |
+| **Inji Certify** | Issues W3C Verifiable Credential for driver badge after approval | ✅ Running (issuance payload pending alignment) |
+| **Inji Wallet** | Driver holds VC on device; presents QR for offline/NFC verification | ⏳ Next — deep link after issuance |
+| **Inji Verify** | Passenger scans driver's Wallet QR — cryptographic VC verification | ⏳ Next — replace trust-band lookup |
 
-- [x] **One-tap share** — **`POST /public/emergency/share`** (no auth) + simulated SMS; also triggered from USSD menu **2**.
-- [x] **Wire to report flow** — **`/report`** submits **`POST /public/report`** + optional simulated SMS to configured recipients.
+---
 
-### Multi-channel & inclusion (submission-sized backlog)
+## Roadmap & TODO backlog
 
-- [ ] NFC tap-to-verify flow
-- [ ] Offline verification support (where feasible)
-- [ ] Wallet integration (operator-held VC) and **Inji Verify**-class lightweight verifier
+### Priority 1 — Close the golden path (hackathon demo)
 
-### Complete partial work (already started)
+- [x] **eSignet login** — Authorization code + PKCE + `private_key_jwt` + JWKS ID token verification.
+- [x] **Driver onboarding** — eSignet → upsert operator → officer approval → short code allocated.
+- [x] **Vehicle binding** — Registry + operator ↔ vehicle bindings; driver sees plates + QR on profile.
+- [x] **Public trust verification** — `GET /public/trust/{code}` with 3-tier disclosure (minimal/standard/extended).
+- [x] **Consent unlock** — Passenger requests → driver approves → disclosure token → extended tier.
+- [x] **Panic share** — One-tap unauthenticated emergency share → simulated SMS → logged to admin incidents.
+- [x] **USSD simulator** — Full menu (verify / panic / consent) wired to live backend services.
+- [x] **QR badge** — Encodes `/verify/result/{short_code}`; shown on driver profile.
+- [x] **Inji Certify running** — Stack up (certify:8090, mimoto:8099, inji-web:3002) alongside eSignet.
+- [ ] **Enable Inji Certify issuance** — Set `INJI_CERTIFY_ENABLE=true`; align credential subject fields with deployment schema; test `POST /credentials/issue/operator/{id}`.
+- [ ] **Ride/trip log** — Add a lightweight `ride_events` table; write a record when consent is approved (driver_id, passenger_msisdn, short_code, timestamp, channel). Expose in admin audit.
+- [ ] **Driver consent notification** — Ensure driver portal profile page surfaces pending consent requests in real time (poll `/auth/me/consent-requests`); add badge count to sidebar.
 
-- [x] **Driver profile** — Vehicle tab + QR from **bindings** + **verify_short_code**; scan history still mock.
-- [x] **Verify / report** — Result page: tiers + consent + panic; **`/report`** → **`POST /public/report`**.
-- [x] **Portal / admin** — Live operator + vehicle tables where noted; **RoleGate** enforces role from `/auth/me`.
-- [ ] **Role elevation** — Secure way to assign `officer` / `admin` (today: DB-only).
+### Priority 2 — Inji Wallet + Verify integration
 
-### Engineering hardening (cross-cutting)
+- [ ] **Inji Wallet delivery** — After VC issuance, generate a deep link / QR (`inji://credential/...`) so the driver can claim the credential into Inji Wallet.
+- [ ] **Inji Verify on passenger side** — Replace the trust-band database lookup on `/verify/result/[id]` with an **Inji Verify**-style cryptographic proof check against the issued VC; show “Verified by MOSIP” badge.
+- [ ] **Offline QR flow** — Driver shows Wallet VC QR; passenger scans with Inji Verify; no network required for the core verification step.
 
-- [ ] HTTPS-only cookies, stricter CORS, secrets management
-- [ ] Postgres + migrations (e.g. Alembic) instead of ad-hoc SQLite schema changes
-- [ ] eSignet JWT verification hardening (JWKS, audience checks; see backend TODOs)
-- [ ] Optional OAuth: backend **one-time code** redirect instead of hash fragment for token handoff
+### Priority 3 — Governance & operations
+
+- [x] **Officer/admin dashboards** — Portal + admin operator lists, detail, bind/unbind; RoleGate on layouts.
+- [x] **Corporate body scoping** — Officers see only their body's operators; system_admin sees all.
+- [ ] **Role elevation UI** — Secure admin page (or CLI command) to assign `officer` / `admin` without direct DB access.
+- [ ] **Incident action wiring** — Portal incidents: “Mark Under Review”, “Suspend”, “Add Note” actions are UI stubs; wire to `PATCH /operators/{id}/status` + a notes endpoint.
+- [ ] **SACCO / authority workflow** — Tailor approval chain when transport authority requirements are confirmed.
+
+### Priority 4 — Channels & inclusion
+
+- [x] **Short-code lookup** — No-auth REST + USSD + web verify page.
+- [ ] **Real carrier USSD/SMS** — Replace simulated endpoints with Africa's Talking or equivalent; keep simulator for tests.
+- [ ] **NFC tap-to-verify** — Driver taps NFC tag; passenger phone opens `/verify/result/{code}`.
+- [ ] **Offline / low-bandwidth** — Wallet-held VC works offline; explore compressed QR for feature phone display.
+
+### Priority 5 — Engineering hardening
+
+- [ ] **Postgres + Alembic** — Replace SQLite `create_all`; schema migrations tracked.
+- [ ] **Persistent audit table** — Dedicated `audit_log` table instead of synthesising from operators/SMS rows.
+- [ ] **HTTPS, cookie hardening, secrets management** — Before any production deployment.
+- [ ] **Inji Certify credential schema** — Define SafeRide-specific VC context; publish DID document.
 
 ---
 

@@ -14,20 +14,10 @@ export function Navbar() {
         <nav className="hidden md:flex items-center gap-6">
           <Link href="/how-it-works" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">How it works</Link>
           <Link href="/privacy" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Trust & Privacy</Link>
-          <Link href="/portal" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Officer Portal</Link>
-          <Link href="/admin" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Admin</Link>
-          <Link href="/simulate/ussd" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">USSD sim</Link>
-          <Link href="/simulate/sms" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">SMS sim</Link>
-          <div className="flex items-center gap-4 ml-4">
-            <Link href="/login">
-              <Button variant="ghost" className="text-muted-foreground">
-                Login
-              </Button>
-            </Link>
-            <Link href="/verify">
-              <Button variant="default" className="bg-indigo-600 hover:bg-indigo-700">Verify Driver</Button>
-            </Link>
-          </div>
+          <Link href="/simulate/ussd" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Try USSD</Link>
+          <Link href="/verify">
+            <Button variant="default" className="bg-indigo-600 hover:bg-indigo-700">Verify Driver</Button>
+          </Link>
         </nav>
         <Sheet>
           <SheetTrigger className="md:hidden inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-slate-100 h-10 w-10">
@@ -38,13 +28,7 @@ export function Navbar() {
             <div className="flex flex-col gap-4 mt-8">
               <Link href="/how-it-works" className="text-lg font-medium">How it works</Link>
               <Link href="/privacy" className="text-lg font-medium">Trust & Privacy</Link>
-              <Link href="/portal" className="text-lg font-medium">Officer Portal</Link>
-              <Link href="/admin" className="text-lg font-medium">Admin</Link>
-              <Link href="/simulate/ussd" className="text-lg font-medium">USSD sim</Link>
-              <Link href="/simulate/sms" className="text-lg font-medium">SMS sim</Link>
-              <Link href="/login" className="text-lg font-medium">
-                Login
-              </Link>
+              <Link href="/simulate/ussd" className="text-lg font-medium">Try USSD</Link>
               <Link href="/verify" className="mt-4">
                 <Button className="w-full bg-indigo-600 hover:bg-indigo-700">Verify driver</Button>
               </Link>

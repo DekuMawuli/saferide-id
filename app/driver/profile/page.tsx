@@ -1,73 +1,87 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { ShieldCheck, Car, MapPin, Clock, QrCode, AlertTriangle, Settings, LogOut } from 'lucide-react';
-import { mockOperators } from '@/lib/mock-data';
+import { ShieldCheck, Car, MapPin, Clock, QrCode, AlertTriangle, Settings, LogOut, BadgeCheck, UserCheck } from 'lucide-react';
 import { useOperatorSession } from '@/hooks/use-operator-session';
+import { useDriverData } from '@/hooks/use-driver-data';
 import { isApiConfigured } from '@/lib/api/config';
-import { ApiError } from '@/lib/api/client';
-import { fetchMyConsentRequests } from '@/lib/api/consent-driver';
-import { fetchOperatorVehicleBindings } from '@/lib/api/governance';
+import { useDriverConsents } from '@/app/driver/layout';
 import { getPublicAppOrigin } from '@/lib/app-url';
-import type { ConsentRequestItem, OperatorVehicleBindingListItem } from '@/lib/api/types';
+import { fetchMyCredentials, buildWalletDeepLink } from '@/lib/api/credentials';
+import type { CredentialRecord } from '@/lib/api/credentials';
+
+
+function initialsFromName(name: string | null | undefined): string {
+  const t = (name ?? '').trim();
+  if (!t) return '?';
+  const parts = t.split(/\s+/).slice(0, 2);
+  return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || '?';
+}
+
+/** Matches backend `RideEvent.channel` (e.g. WEB, USSD). */
+function formatRideChannel(channel: string): string {
+  const c = (channel || '').trim().toUpperCase();
+  if (c === 'WEB') return 'Web';
+  if (c === 'USSD') return 'USSD';
+  if (c === 'SMS') return 'SMS';
+  return channel.trim() || '—';
+}
 
 export default function DriverProfilePage() {
   const { me, loading, error, signOut, hasToken, apiConfigured } = useOperatorSession();
   const apiOp = me?.authenticated && me.operator ? me.operator : null;
-  const driver = mockOperators[0];
-  const [bindings, setBindings] = useState<OperatorVehicleBindingListItem[]>([]);
-  const [bindErr, setBindErr] = useState<string | null>(null);
-  const [consentOpen, setConsentOpen] = useState<ConsentRequestItem[]>([]);
+  const {
+    activeBinding,
+    rideEvents,
+    associationLabel,
+    fleetLoading,
+    fleetError,
+  } = useDriverData({
+    operatorId: apiOp?.id,
+    corporateBodyId: apiOp?.corporate_body_id ?? null,
+    hasToken,
+    apiConfigured,
+  });
+  const { consentRequests: consentOpen } = useDriverConsents();
+  const [credentials, setCredentials] = useState<CredentialRecord[]>([]);
 
-  const loadBindings = useCallback(async () => {
-    if (!apiOp?.id) return;
-    setBindErr(null);
+  const loadCredentials = useCallback(async () => {
+    if (!hasToken || !apiConfigured) { setCredentials([]); return; }
     try {
-      const b = await fetchOperatorVehicleBindings(apiOp.id);
-      setBindings(b);
-    } catch (e) {
-      setBindings([]);
-      setBindErr(e instanceof ApiError ? `${e.status}: ${e.message}` : 'Could not load vehicles');
-    }
-  }, [apiOp?.id]);
-
-  useEffect(() => {
-    if (apiOp?.id) void loadBindings();
-    else setBindings([]);
-  }, [apiOp?.id, loadBindings]);
-
-  const loadConsents = useCallback(async () => {
-    if (!hasToken || !apiConfigured) {
-      setConsentOpen([]);
-      return;
-    }
-    try {
-      const rows = await fetchMyConsentRequests();
-      setConsentOpen(rows);
+      const rows = await fetchMyCredentials();
+      setCredentials(rows);
     } catch {
-      setConsentOpen([]);
+      setCredentials([]);
     }
   }, [hasToken, apiConfigured]);
 
   useEffect(() => {
-    void loadConsents();
-  }, [loadConsents]);
+    void loadCredentials();
+  }, [loadCredentials]);
 
-  const displayName = apiOp?.full_name?.trim() || `${driver.firstName} ${driver.lastName}`;
-  const displayPhoto = apiOp?.photo_ref || driver.photoUrl;
+  const trustEvents = useMemo(
+    () => rideEvents.filter((e) => e.event_type === 'trust_verified'),
+    [rideEvents],
+  );
+  const consentEvents = useMemo(
+    () => rideEvents.filter((e) => e.event_type === 'consent_approved'),
+    [rideEvents],
+  );
+
+  const displayName = apiOp?.full_name?.trim() || 'Driver';
+  const displayPhoto = apiOp?.photo_ref?.trim() || null;
   const shortCode = apiOp?.verify_short_code?.trim();
-  const displayCode = shortCode ?? (apiOp ? `${apiOp.external_subject_id.slice(0, 10)}…` : driver.code);
+  const displayCode = shortCode ?? (apiOp ? `${apiOp.external_subject_id.slice(0, 10)}…` : '—');
   const verifyUrl =
     shortCode && getPublicAppOrigin() ? `${getPublicAppOrigin()}/verify/result/${shortCode}` : '';
-  const statusKey = (apiOp?.status ?? driver.status).toLowerCase();
-  const activeBinding = bindings.find((b) => b.binding.is_active);
+  const statusKey = (apiOp?.status ?? 'pending').toLowerCase();
 
   const renderStatusBadge = (status: string) => {
     switch (status) {
@@ -93,22 +107,13 @@ export default function DriverProfilePage() {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
-        {apiConfigured && hasToken && loading ? (
-          <p className="text-sm text-muted-foreground mb-4">Loading operator from API…</p>
+        {apiConfigured && hasToken && (loading || fleetLoading) ? (
+          <p className="text-sm text-muted-foreground mb-4">Loading your profile…</p>
         ) : null}
-        {apiOp ? (
-          <Alert className="mb-6 border-emerald-200 bg-emerald-50/80">
-            <AlertTitle className="text-emerald-900">Connected to backend</AlertTitle>
-            <AlertDescription className="text-emerald-800">
-              Profile and vehicle bindings load from <code className="text-xs">GET /auth/me</code> and{' '}
-              <code className="text-xs">GET /operators/…/vehicle-bindings</code>. Scan history remains demo.
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        {bindErr ? (
+        {fleetError ? (
           <Alert variant="destructive" className="mb-6">
-            <AlertTitle>Vehicle bindings</AlertTitle>
-            <AlertDescription>{bindErr}</AlertDescription>
+            <AlertTitle>Fleet data</AlertTitle>
+            <AlertDescription>{fleetError}</AlertDescription>
           </Alert>
         ) : null}
         {consentOpen.length > 0 ? (
@@ -169,8 +174,12 @@ export default function DriverProfilePage() {
               <div className="h-24 bg-indigo-950"></div>
               <CardContent className="pt-0 relative">
                 <div className="flex justify-between items-end -mt-12 mb-4">
-                  <div className="h-24 w-24 rounded-full border-4 border-white bg-slate-200 overflow-hidden">
-                    <img src={displayPhoto} alt="Profile" className="h-full w-full object-cover" />
+                  <div className="h-24 w-24 rounded-full border-4 border-white bg-slate-200 overflow-hidden flex items-center justify-center">
+                    {displayPhoto ? (
+                      <img src={displayPhoto} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-2xl font-semibold text-slate-500">{initialsFromName(displayName)}</span>
+                    )}
                   </div>
                   <div className="pb-2">
                     {renderStatusBadge(statusKey)}
@@ -192,7 +201,7 @@ export default function DriverProfilePage() {
                     </div>
                     <div>
                       <p className="font-medium text-slate-900">Association</p>
-                      <p className="text-muted-foreground">{driver.association}</p>
+                      <p className="text-muted-foreground">{associationLabel ?? '—'}</p>
                     </div>
                   </div>
                   
@@ -201,8 +210,12 @@ export default function DriverProfilePage() {
                       <ShieldCheck className="h-4 w-4 text-emerald-600" />
                     </div>
                     <div>
-                      <p className="font-medium text-slate-900">Verification Status</p>
-                      <p className="text-emerald-600">Verified by NIRA</p>
+                      <p className="font-medium text-slate-900">IdP verification</p>
+                      <p className={apiOp?.esignet_verified_at ? 'text-emerald-600' : 'text-amber-700'}>
+                        {apiOp?.esignet_verified_at
+                          ? `Last verified ${new Date(apiOp.esignet_verified_at).toLocaleString()}`
+                          : 'Not verified yet (sign in with eSignet)'}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -254,9 +267,17 @@ export default function DriverProfilePage() {
           {/* Right Column: Details Tabs */}
           <div className="lg:col-span-2">
             <Tabs defaultValue="vehicle" className="w-full">
-              <TabsList className="grid w-full grid-cols-3 mb-6 bg-slate-100">
-                <TabsTrigger value="vehicle">Vehicle Details</TabsTrigger>
-                <TabsTrigger value="history">Scan History</TabsTrigger>
+              <TabsList className="grid w-full grid-cols-4 mb-6 bg-slate-100">
+                <TabsTrigger value="vehicle">Vehicle</TabsTrigger>
+                <TabsTrigger value="credentials">
+                  Credentials
+                  {credentials.length > 0 && (
+                    <span className="ml-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-bold text-white">
+                      {credentials.length}
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="history">History</TabsTrigger>
                 <TabsTrigger value="settings">Settings</TabsTrigger>
               </TabsList>
               
@@ -271,7 +292,7 @@ export default function DriverProfilePage() {
                   </CardHeader>
                   <CardContent className="space-y-6">
                     {activeBinding ? (
-                      <div className="grid grid-cols-2 gap-6">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-slate-500">License plate</p>
                           <p className="text-lg font-mono font-semibold text-indigo-950">
@@ -279,8 +300,22 @@ export default function DriverProfilePage() {
                           </p>
                         </div>
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-slate-500">Binding</p>
-                          <p className="break-all font-mono text-xs text-slate-900">{activeBinding.binding.id}</p>
+                          <p className="text-sm font-medium text-slate-500">Vehicle type</p>
+                          <p className="text-lg font-medium text-slate-900 capitalize">
+                            {activeBinding.vehicle_type ?? '—'}
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-slate-500">Make &amp; model</p>
+                          <p className="text-lg font-medium text-slate-900">{activeBinding.make_model ?? '—'}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-slate-500">Color</p>
+                          <p className="text-lg font-medium text-slate-900 capitalize">{activeBinding.color ?? '—'}</p>
+                        </div>
+                        <div className="space-y-1 sm:col-span-2">
+                          <p className="text-sm font-medium text-slate-500">Association</p>
+                          <p className="text-lg font-medium text-slate-900">{activeBinding.corporate_body_name ?? associationLabel ?? '—'}</p>
                         </div>
                       </div>
                     ) : apiOp ? (
@@ -292,24 +327,9 @@ export default function DriverProfilePage() {
                         .
                       </p>
                     ) : (
-                      <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-slate-500">License Plate</p>
-                          <p className="text-lg font-mono font-semibold text-indigo-950">{driver.vehicle.plate}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-slate-500">Category</p>
-                          <p className="text-lg font-medium text-slate-900 capitalize">{driver.vehicle.category}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-slate-500">Make & Model</p>
-                          <p className="text-lg font-medium text-slate-900">{driver.vehicle.makeModel}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-slate-500">Color</p>
-                          <p className="text-lg font-medium text-slate-900 capitalize">{driver.vehicle.color}</p>
-                        </div>
-                      </div>
+                      <p className="text-muted-foreground text-sm">
+                        Sign in to see your assigned vehicle from the server.
+                      </p>
                     )}
                     
                     <div className="pt-6 border-t border-slate-100">
@@ -327,6 +347,71 @@ export default function DriverProfilePage() {
                 </Card>
               </TabsContent>
               
+              <TabsContent value="credentials" className="space-y-6">
+                <Card className="border-slate-200 shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <BadgeCheck className="h-5 w-5 text-emerald-600" />
+                      Verifiable Credentials
+                    </CardTitle>
+                    <CardDescription>
+                      Credentials issued to your profile. Scan the QR with Inji Wallet to claim them.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {credentials.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No credentials issued yet. They are generated automatically when you sign in with eSignet.
+                      </p>
+                    ) : (
+                      <div className="space-y-6">
+                        {credentials.map((cred) => {
+                          const certifyBase = process.env.NEXT_PUBLIC_CERTIFY_BASE_URL ?? 'http://localhost:8090';
+                          const deepLink = buildWalletDeepLink(certifyBase, cred.template_name ?? 'SafeRideDriverCredential');
+                          return (
+                            <div key={cred.id} className="rounded-lg border border-slate-200 p-4 space-y-4">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p className="font-medium text-slate-900">{cred.template_name ?? cred.credential_type}</p>
+                                  <p className="text-xs text-muted-foreground font-mono mt-0.5">{cred.id.slice(0, 16)}…</p>
+                                </div>
+                                <Badge className={
+                                  cred.status === 'ISSUED'
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                }>
+                                  {cred.status}
+                                </Badge>
+                              </div>
+                              <div className="flex flex-col sm:flex-row gap-6 items-start">
+                                <div className="rounded-lg bg-white border border-slate-200 p-3 shadow-sm">
+                                  <QRCodeSVG value={deepLink} size={140} level="M" />
+                                </div>
+                                <div className="space-y-2 text-sm flex-1">
+                                  <p className="font-medium text-slate-700">Claim in Inji Wallet</p>
+                                  <ol className="list-decimal list-inside space-y-1 text-muted-foreground text-xs">
+                                    <li>Open Inji Wallet on your phone</li>
+                                    <li>Tap <span className="font-medium text-slate-700">+ Add Credential</span></li>
+                                    <li>Scan this QR code</li>
+                                    <li>Authenticate with eSignet when prompted</li>
+                                  </ol>
+                                  {cred.issued_at ? (
+                                    <p className="text-xs text-muted-foreground pt-1">
+                                      Issued: {new Date(cred.issued_at).toLocaleString()}
+                                    </p>
+                                  ) : null}
+                                  <p className="break-all font-mono text-[10px] text-slate-400 pt-1">{deepLink.slice(0, 80)}…</p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
               <TabsContent value="history" className="space-y-6">
                 <Card className="border-slate-200 shadow-sm">
                   <CardHeader>
@@ -334,28 +419,95 @@ export default function DriverProfilePage() {
                       <Clock className="h-5 w-5 text-indigo-600" />
                       Recent Scans
                     </CardTitle>
-                    <CardDescription>A log of when passengers verified your profile.</CardDescription>
+                    <CardDescription>
+                      Passenger lookups of your verify code (recorded when someone opens your public trust page). Disclosure
+                      approvals you make are listed separately below.
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {[1, 2, 3, 4, 5].map((i) => (
-                        <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center">
-                              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                  <CardContent className="space-y-8">
+                    {!apiOp ? (
+                      <p className="text-sm text-muted-foreground">Sign in to see verification activity.</p>
+                    ) : (
+                      <>
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-800 mb-3">Passenger code lookups</h4>
+                          {trustEvents.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">
+                              No lookups yet. When a passenger checks your code on the web or via USSD/SMS, each view is
+                              logged here.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {trustEvents.map((ev) => {
+                                const when = new Date(ev.recorded_at);
+                                return (
+                                  <div
+                                    key={ev.id}
+                                    className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+                                        <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="font-medium text-sm text-slate-900">Verify code viewed</p>
+                                        <p className="text-xs text-muted-foreground truncate">
+                                          {formatRideChannel(ev.channel)}
+                                          {ev.passenger_msisdn ? ` · ${ev.passenger_msisdn}` : ''}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <div className="text-right shrink-0 ml-2">
+                                      <p className="text-sm font-medium text-slate-900">{when.toLocaleDateString()}</p>
+                                      <p className="text-xs text-muted-foreground">{when.toLocaleTimeString()}</p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                            <div>
-                              <p className="font-medium text-sm text-slate-900">Successful Verification</p>
-                              <p className="text-xs text-muted-foreground">Passenger Scan</p>
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-sm font-medium text-slate-900">Today</p>
-                            <p className="text-xs text-muted-foreground">08:{45 - i * 5} AM</p>
-                          </div>
+                          )}
                         </div>
-                      ))}
-                    </div>
+
+                        <div className="border-t border-slate-100 pt-6">
+                          <h4 className="text-sm font-semibold text-slate-800 mb-3">Disclosure approvals (by you)</h4>
+                          {consentEvents.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">
+                              No approvals yet. When you approve a passenger disclosure request on the consent screen, it
+                              appears here — that is not the same as a code lookup above.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {consentEvents.map((ev) => {
+                                const when = new Date(ev.recorded_at);
+                                return (
+                                  <div
+                                    key={ev.id}
+                                    className="flex items-center justify-between p-3 bg-violet-50/80 rounded-lg border border-violet-100"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center shrink-0">
+                                        <UserCheck className="h-4 w-4 text-violet-700" />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="font-medium text-sm text-slate-900">You approved disclosure</p>
+                                        <p className="text-xs text-muted-foreground truncate">
+                                          {formatRideChannel(ev.channel)}
+                                          {ev.passenger_msisdn ? ` · ${ev.passenger_msisdn}` : ''}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <div className="text-right shrink-0 ml-2">
+                                      <p className="text-sm font-medium text-slate-900">{when.toLocaleDateString()}</p>
+                                      <p className="text-xs text-muted-foreground">{when.toLocaleTimeString()}</p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </CardContent>
                 </Card>
               </TabsContent>

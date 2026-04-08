@@ -31,3 +31,8 @@ class OperatorVehicleBindingListItem(BaseModel):
     binding: OperatorVehicleBindingRead
     plate: str | None = None
     vehicle_display_name: str | None = None
+    vehicle_type: str | None = None
+    make_model: str | None = None
+    color: str | None = None
+    corporate_body_name: str | None = None
+    vehicle_updated_at: datetime | None = None
