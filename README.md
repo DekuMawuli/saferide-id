@@ -2,7 +2,8 @@
 
 Digital trust platform for informal transport: **Next.js** frontend, **FastAPI** backend, **MOSIP eSignet** for operator authentication, and **Inji Certify** for verifiable credential issuance.
 
-**[Demo video](https://youtu.be/XxCO43ni6Qo)**
+**Application Demo Video: [Demo video](https://youtu.be/XxCO43ni6Qo)**
+**Presentation Video: [Presentation vide](https://drive.google.com/drive/folders/1je5NeXh9x4nF2PAJg1R-NWDazlE-6wDI?usp=sharing)**
 
 ---
 
